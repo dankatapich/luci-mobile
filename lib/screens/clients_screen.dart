@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -77,8 +79,14 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final watchedAppState = ref.watch(appStateProvider);
-    // Recompute future only when selected router changes
+    // Recompute future when the selected router or saved client view changes.
     Future<List<Client>>? future = _clientsFuture;
+    if (watchedAppState.clientsViewMode != _clientsViewMode) {
+      _clientsViewMode = watchedAppState.clientsViewMode;
+      _expandedClientIndices.clear();
+      _computeClientsFuture();
+      future = _clientsFuture;
+    }
     final currentId = watchedAppState.selectedRouter?.id;
     if (currentId != _lastSelectedRouterId) {
       _lastSelectedRouterId = currentId;
@@ -86,6 +94,7 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
       future = _clientsFuture;
     }
     return FutureBuilder<List<Client>>(
+      key: ValueKey('${_clientsViewMode.name}:${currentId ?? ''}'),
       future: future,
       builder: (context, snapshot) {
         final aggregatedClients = snapshot.data ?? [];
@@ -97,7 +106,9 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
                 onRefresh: () async {
                   // Trigger a refresh by re-fetching dashboard data for selected router
                   await ref.read(appStateProvider).fetchDashboardData();
-                  setState(() { _computeClientsFuture(); });
+                  setState(() {
+                    _computeClientsFuture();
+                  });
                 },
                 child: Builder(
                   builder: (context) {
@@ -237,15 +248,18 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
                               padding: const EdgeInsets.symmetric(horizontal: 8),
                             ),
                             onSelectionChanged: (s) {
+                              final selectedMode = s.first;
                               setState(() {
-                                _clientsViewMode = s.first;
+                                _clientsViewMode = selectedMode;
                                 _expandedClientIndices.clear();
                                 _computeClientsFuture();
                               });
                               // Persist selection
-                              ref
-                                  .read(appStateProvider)
-                                  .setClientsViewMode(_clientsViewMode);
+                              unawaited(
+                                ref
+                                    .read(appStateProvider)
+                                    .setClientsViewMode(selectedMode),
+                              );
                             },
                           ),
                         ),

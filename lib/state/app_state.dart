@@ -1320,6 +1320,10 @@ class AppState extends ChangeNotifier {
         routers,
         context: context,
       );
+      Logger.info(
+        'Blocked clients view found ${blockedRules.length} app-created '
+        'rules across ${routers.length} routers',
+      );
       final activeClients = await fetchAggregatedClients();
       final clients = <String, Client>{};
 

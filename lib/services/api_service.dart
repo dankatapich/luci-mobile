@@ -6,6 +6,39 @@ import 'package:luci_mobile/services/interfaces/api_service_interface.dart';
 import '../utils/http_client_manager.dart';
 import '../utils/logger.dart';
 
+bool shouldFetchAssociatedStationsForWirelessInterface(
+  Map<String, dynamic> interfaceData,
+) {
+  final modes = <String>[
+    if (interfaceData['mode'] != null) interfaceData['mode'].toString(),
+    if (interfaceData['config'] is Map &&
+        (interfaceData['config'] as Map)['mode'] != null)
+      (interfaceData['config'] as Map)['mode'].toString(),
+    if (interfaceData['iwinfo'] is Map &&
+        (interfaceData['iwinfo'] as Map)['mode'] != null)
+      (interfaceData['iwinfo'] as Map)['mode'].toString(),
+  ].map((mode) => mode.trim().toLowerCase()).toList();
+
+  if (modes.isEmpty) {
+    // Preserve existing behavior for older LuCI responses that omit mode data.
+    return true;
+  }
+  if (modes.any(_isWirelessClientMode)) return false;
+  return modes.any(_isWirelessAccessPointMode);
+}
+
+bool _isWirelessAccessPointMode(String mode) {
+  return mode == 'ap' || mode == 'ap-wds' || mode == 'master';
+}
+
+bool _isWirelessClientMode(String mode) {
+  return mode == 'sta' ||
+      mode == 'sta-wds' ||
+      mode == 'client' ||
+      mode == 'managed' ||
+      mode == 'station';
+}
+
 class LoginResult {
   final String? token;
   final bool actualUseHttps;
@@ -467,6 +500,14 @@ class RealApiService implements IApiService {
 
           for (final iface in interfaces) {
             if (iface is Map<String, dynamic>) {
+              if (!shouldFetchAssociatedStationsForWirelessInterface(iface)) {
+                Logger.debug(
+                  'Skipping non-AP wireless interface for client scan: '
+                  '${iface['ifname'] ?? iface['section'] ?? 'unknown'}',
+                );
+                continue;
+              }
+
               final ifname = iface['ifname'] as String?;
               if (ifname != null) {
                 // Fetch associated stations for this interface
