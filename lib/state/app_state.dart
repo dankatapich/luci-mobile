@@ -1414,40 +1414,50 @@ class AppState extends ChangeNotifier {
             rule.section,
       };
 
-      final deleteCommands = deleteSections
-          .where(_isSafeUciSection)
-          .map((entry) => 'uci -q delete firewall.$entry || true');
-      final command = [
-        ...deleteCommands,
-        'uci set firewall.$section=rule',
-        'uci set firewall.$section.name=${_shellQuote(name)}',
-        'uci set firewall.$section.src=${_shellQuote('*')}',
-        'uci set firewall.$section.dest=${_shellQuote('*')}',
-        'uci set firewall.$section.src_mac=${_shellQuote(mac)}',
-        'uci set firewall.$section.proto=${_shellQuote('all')}',
-        'uci set firewall.$section.target=${_shellQuote('REJECT')}',
-        'uci set firewall.$section.family=${_shellQuote('any')}',
-        'uci set firewall.$section.enabled=${_shellQuote('1')}',
-        'uci commit firewall',
-        '/etc/init.d/firewall reload',
-      ].join(' && ');
-      Logger.debug('Block client command: $command');
+      for (final deleteSection in deleteSections.where(_isSafeUciSection)) {
+        await _deleteFirewallSection(
+          router,
+          session,
+          deleteSection,
+          context: context,
+        );
+      }
 
-      final result = await _apiService!.systemExec(
-        router.ipAddress,
-        session.sysauth,
-        session.useHttps,
-        command: command,
-        context: context?.mounted == true ? context : null,
+      final addResult = await _callRouterUci(
+        router,
+        session,
+        'add',
+        {
+          'config': 'firewall',
+          'type': 'rule',
+          'name': section,
+          'values': _firewallBlockRuleValues(
+            mac: mac,
+            name: name,
+          ),
+        },
+        context: context,
       );
-      Logger.debug('Block client RPC result: ${_formatDebugValue(result)}');
-      final success = _isRpcSuccess(result);
+
+      if (!_isRpcSuccess(addResult)) {
+        Logger.warning(
+          'Block client failed while adding UCI rule router='
+          '${router.ipAddress} mac=$mac result=${_formatDebugValue(addResult)}',
+        );
+        return false;
+      }
+
+      final success = await _applyFirewallChanges(
+        router,
+        session,
+        context: context,
+      );
       if (success) {
         notifyListeners();
       } else {
         Logger.warning(
-          'Block client command returned failure router=${router.ipAddress} '
-          'mac=$mac result=${_formatDebugValue(result)}',
+          'Block client failed while applying firewall changes '
+          'router=${router.ipAddress} mac=$mac',
         );
       }
       return success;
@@ -1508,37 +1518,33 @@ class AppState extends ChangeNotifier {
             rule.section,
       };
 
-      final deleteCommands = deleteSections
-          .where(_isSafeUciSection)
-          .map((entry) => 'uci -q delete firewall.$entry || true')
-          .toList();
-      if (deleteCommands.isEmpty) {
+      var removedAnySection = false;
+      for (final deleteSection in deleteSections.where(_isSafeUciSection)) {
+        final removed = await _deleteFirewallSection(
+          router,
+          session,
+          deleteSection,
+          context: context,
+        );
+        removedAnySection = removedAnySection || removed;
+      }
+
+      if (!removedAnySection) {
         Logger.info('No client block rules found to remove for mac=$mac');
         return true;
       }
 
-      final command = [
-        ...deleteCommands,
-        'uci commit firewall',
-        '/etc/init.d/firewall reload',
-      ].join(' && ');
-      Logger.debug('Unblock client command: $command');
-
-      final result = await _apiService!.systemExec(
-        router.ipAddress,
-        session.sysauth,
-        session.useHttps,
-        command: command,
-        context: context?.mounted == true ? context : null,
+      final success = await _applyFirewallChanges(
+        router,
+        session,
+        context: context,
       );
-      Logger.debug('Unblock client RPC result: ${_formatDebugValue(result)}');
-      final success = _isRpcSuccess(result);
       if (success) {
         notifyListeners();
       } else {
         Logger.warning(
-          'Unblock client command returned failure router=${router.ipAddress} '
-          'mac=$mac result=${_formatDebugValue(result)}',
+          'Unblock client failed while applying firewall changes '
+          'router=${router.ipAddress} mac=$mac',
         );
       }
       return success;
@@ -1591,8 +1597,138 @@ class AppState extends ChangeNotifier {
     return _routerService?.selectedRouter;
   }
 
-  String _shellQuote(String value) {
-    return "'${value.replaceAll("'", "'\"'\"'")}'";
+  Map<String, String> _firewallBlockRuleValues({
+    required String mac,
+    required String name,
+  }) {
+    return {
+      'name': name,
+      'src': '*',
+      'dest': '*',
+      'src_mac': mac,
+      'proto': 'all',
+      'target': 'REJECT',
+      'family': 'any',
+      'enabled': '1',
+    };
+  }
+
+  Future<dynamic> _callRouterUci(
+    model.Router router,
+    _RouterSession session,
+    String method,
+    Map<String, dynamic> params, {
+    BuildContext? context,
+  }) async {
+    Logger.debug(
+      'Calling uci.$method router=${router.ipAddress} '
+      'params=${_formatDebugValue(params)}',
+    );
+    final result = await _apiService!.call(
+      router.ipAddress,
+      session.sysauth,
+      session.useHttps,
+      object: 'uci',
+      method: method,
+      params: params,
+      context: context?.mounted == true ? context : null,
+    );
+    Logger.debug(
+      'uci.$method result router=${router.ipAddress} '
+      'result=${_formatDebugValue(result)}',
+    );
+    return result;
+  }
+
+  Future<bool> _deleteFirewallSection(
+    model.Router router,
+    _RouterSession session,
+    String section, {
+    BuildContext? context,
+  }) async {
+    final result = await _callRouterUci(
+      router,
+      session,
+      'delete',
+      {
+        'config': 'firewall',
+        'section': section,
+      },
+      context: context,
+    );
+    if (_isRpcSuccess(result)) {
+      Logger.debug(
+        'Deleted firewall section router=${router.ipAddress} section=$section',
+      );
+      return true;
+    }
+    Logger.debug(
+      'Firewall section was not deleted router=${router.ipAddress} '
+      'section=$section result=${_formatDebugValue(result)}',
+    );
+    return false;
+  }
+
+  Future<bool> _applyFirewallChanges(
+    model.Router router,
+    _RouterSession session, {
+    BuildContext? context,
+  }) async {
+    try {
+      final applyResult = await _callRouterUci(
+        router,
+        session,
+        'apply',
+        {'rollback': false},
+        context: context,
+      );
+      if (_isRpcSuccess(applyResult)) {
+        return true;
+      }
+      Logger.warning(
+        'uci.apply failed router=${router.ipAddress} '
+        'result=${_formatDebugValue(applyResult)}',
+      );
+    } catch (e, stack) {
+      Logger.exception('uci.apply failed', e, stack);
+    }
+
+    try {
+      final commitResult = await _callRouterUci(
+        router,
+        session,
+        'commit',
+        {'config': 'firewall'},
+        context: context,
+      );
+      if (!_isRpcSuccess(commitResult)) {
+        Logger.warning(
+          'uci.commit firewall failed router=${router.ipAddress} '
+          'result=${_formatDebugValue(commitResult)}',
+        );
+        return false;
+      }
+
+      final reloadResult = await _callRouterUci(
+        router,
+        session,
+        'reload_config',
+        const <String, dynamic>{},
+        context: context,
+      );
+      if (!_isRpcSuccess(reloadResult)) {
+        Logger.warning(
+          'uci.reload_config failed router=${router.ipAddress} '
+          'result=${_formatDebugValue(reloadResult)}',
+        );
+        return false;
+      }
+
+      return true;
+    } catch (e, stack) {
+      Logger.exception('Firewall commit/reload fallback failed', e, stack);
+      return false;
+    }
   }
 
   bool _isSafeUciSection(String section) {
