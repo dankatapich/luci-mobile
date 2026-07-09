@@ -17,6 +17,9 @@ class Client {
   final int? noise; // dBm
   final int? rxRate; // kbit/s or bit/s, depending on iwinfo backend
   final int? txRate; // kbit/s or bit/s, depending on iwinfo backend
+  final bool isBlocked;
+  final String? routerId;
+  final String? routerName;
 
   Client({
     required this.ipAddress,
@@ -35,6 +38,9 @@ class Client {
     this.noise,
     this.rxRate,
     this.txRate,
+    this.isBlocked = false,
+    this.routerId,
+    this.routerName,
   });
 
   // Helper function to determine connection type from MAC address or other data
@@ -217,6 +223,9 @@ class Client {
         'tx',
         'bitrate',
       ]),
+      isBlocked: lease['isBlocked'] == true,
+      routerId: _toStringValue(lease['routerId']),
+      routerName: _toStringValue(lease['routerName']),
     );
   }
 
@@ -225,6 +234,9 @@ class Client {
   factory Client.fromWirelessStation(
     String macAddress, {
     Map<String, dynamic>? stationDetails,
+    bool isBlocked = false,
+    String? routerId,
+    String? routerName,
   }) {
     final details = stationDetails ?? const <String, dynamic>{};
     return Client(
@@ -248,6 +260,25 @@ class Client {
         'tx',
         'bitrate',
       ]),
+      isBlocked: isBlocked,
+      routerId: routerId ?? _toStringValue(details['routerId']),
+      routerName: routerName ?? _toStringValue(details['routerName']),
+    );
+  }
+
+  factory Client.blocked({
+    required String macAddress,
+    String? routerId,
+    String? routerName,
+  }) {
+    return Client(
+      ipAddress: 'N/A',
+      macAddress: macAddress,
+      hostname: 'Blocked Device',
+      connectionType: ConnectionType.unknown,
+      isBlocked: true,
+      routerId: routerId,
+      routerName: routerName,
     );
   }
 
@@ -343,6 +374,9 @@ class Client {
     int? noise,
     int? rxRate,
     int? txRate,
+    bool? isBlocked,
+    String? routerId,
+    String? routerName,
   }) {
     return Client(
       ipAddress: ipAddress ?? this.ipAddress,
@@ -361,6 +395,9 @@ class Client {
       noise: noise ?? this.noise,
       rxRate: rxRate ?? this.rxRate,
       txRate: txRate ?? this.txRate,
+      isBlocked: isBlocked ?? this.isBlocked,
+      routerId: routerId ?? this.routerId,
+      routerName: routerName ?? this.routerName,
     );
   }
 }

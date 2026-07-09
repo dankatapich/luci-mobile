@@ -19,6 +19,30 @@ import 'package:luci_mobile/config/app_config.dart';
 import 'package:luci_mobile/utils/http_client_manager.dart';
 import 'package:luci_mobile/utils/logger.dart';
 
+enum ClientsViewMode { all, selected, blocked }
+
+class _RouterSession {
+  final String sysauth;
+  final bool useHttps;
+
+  _RouterSession({
+    required this.sysauth,
+    required this.useHttps,
+  });
+}
+
+class _BlockedClientRule {
+  final String macAddress;
+  final String section;
+  final model.Router? router;
+
+  _BlockedClientRule({
+    required this.macAddress,
+    required this.section,
+    this.router,
+  });
+}
+
 class AppState extends ChangeNotifier {
   static AppState? _instance;
 
@@ -55,9 +79,14 @@ class AppState extends ChangeNotifier {
   static const String _themeModeKey = 'themeMode';
 
   // Clients view mode (aggregate across routers)
-  bool _clientsAggregateAllRouters = true;
+  ClientsViewMode _clientsViewMode = ClientsViewMode.all;
   static const String _clientsAggregateKey = 'clients_aggregate_all';
-  bool get clientsAggregateAllRouters => _clientsAggregateAllRouters;
+  static const String _blockedRuleNamePrefix = 'luci-app-';
+  static const String _blockedRuleSectionPrefix = 'luci_app_block_';
+  final Set<String> _mockBlockedClientMacs = {};
+  ClientsViewMode get clientsViewMode => _clientsViewMode;
+  bool get clientsAggregateAllRouters =>
+      _clientsViewMode == ClientsViewMode.all;
 
   // Dashboard preferences state
   DashboardPreferences _dashboardPreferences = DashboardPreferences();
@@ -195,20 +224,25 @@ class AppState extends ChangeNotifier {
 
   Future<void> _loadClientsViewMode() async {
     final stored = await _secureStorageService.readValue(_clientsAggregateKey);
-    if (stored == 'true') {
-      _clientsAggregateAllRouters = true;
-    } else if (stored == 'false') {
-      _clientsAggregateAllRouters = false;
+    if (stored == ClientsViewMode.blocked.name) {
+      _clientsViewMode = ClientsViewMode.blocked;
+    } else if (stored == ClientsViewMode.selected.name || stored == 'false') {
+      _clientsViewMode = ClientsViewMode.selected;
+    } else {
+      _clientsViewMode = ClientsViewMode.all;
     }
   }
 
-  Future<void> setClientsAggregateAllRouters(bool aggregate) async {
-    _clientsAggregateAllRouters = aggregate;
-    await _secureStorageService.writeValue(
-      _clientsAggregateKey,
-      aggregate.toString(),
-    );
+  Future<void> setClientsViewMode(ClientsViewMode mode) async {
+    _clientsViewMode = mode;
+    await _secureStorageService.writeValue(_clientsAggregateKey, mode.name);
     notifyListeners();
+  }
+
+  Future<void> setClientsAggregateAllRouters(bool aggregate) async {
+    await setClientsViewMode(
+      aggregate ? ClientsViewMode.all : ClientsViewMode.selected,
+    );
   }
 
   Future<void> loadDashboardPreferences() async {
@@ -1279,8 +1313,393 @@ class AppState extends ChangeNotifier {
         false;
   }
 
+  Future<List<Client>> fetchBlockedClients({BuildContext? context}) async {
+    try {
+      final routers = _routerService?.routers ?? const <model.Router>[];
+      final blockedRules = await _fetchBlockedRuleMapForRouters(
+        routers,
+        context: context,
+      );
+      final activeClients = await fetchAggregatedClients();
+      final clients = <String, Client>{};
+
+      for (final client in activeClients) {
+        final mac = _normalizeClientMac(client.macAddress);
+        if (client.isBlocked || blockedRules.containsKey(mac)) {
+          final rule = blockedRules[mac];
+          final router = rule?.router;
+          clients[mac] = client.copyWith(
+            isBlocked: true,
+            routerId: client.routerId ?? router?.id,
+            routerName: client.routerName ??
+                (router == null ? null : _routerDisplayName(router)),
+          );
+        }
+      }
+
+      for (final rule in blockedRules.values) {
+        clients.putIfAbsent(
+          rule.macAddress,
+          () => Client.blocked(
+            macAddress: rule.macAddress,
+            routerId: rule.router?.id,
+            routerName:
+                rule.router == null ? null : _routerDisplayName(rule.router!),
+          ),
+        );
+      }
+
+      final list = clients.values.toList();
+      list.sort((a, b) {
+        final routerCompare = (a.routerName ?? '').compareTo(b.routerName ?? '');
+        if (routerCompare != 0) return routerCompare;
+        return a.hostname.toLowerCase().compareTo(b.hostname.toLowerCase());
+      });
+      return list;
+    } catch (e, stack) {
+      Logger.exception('Failed to fetch blocked clients', e, stack);
+      return [];
+    }
+  }
+
+  Future<bool> blockClient(Client client, {BuildContext? context}) async {
+    if (!_isBlockableMac(client.macAddress)) return false;
+    final mac = _normalizeClientMac(client.macAddress);
+
+    if (_reviewerModeEnabled) {
+      _mockBlockedClientMacs.add(mac);
+      notifyListeners();
+      return true;
+    }
+
+    final router = _routerForClient(client);
+    if (router == null) return false;
+
+    try {
+      final session = await _sessionForRouter(router, context: context);
+      if (session == null) return false;
+
+      final section = _blockRuleSectionForMac(mac);
+      final name = _blockRuleNameForMac(mac);
+      final existingRules = await _fetchBlockedRulesForRouter(
+        router,
+        context: context,
+      );
+      final deleteSections = {
+        section,
+        for (final rule in existingRules)
+          if (rule.macAddress == mac && _isSafeUciSection(rule.section))
+            rule.section,
+      };
+
+      final deleteCommands = deleteSections
+          .where(_isSafeUciSection)
+          .map((entry) => 'uci -q delete firewall.$entry || true');
+      final command = [
+        ...deleteCommands,
+        'uci set firewall.$section=rule',
+        'uci set firewall.$section.name=${_shellQuote(name)}',
+        'uci set firewall.$section.src=${_shellQuote('*')}',
+        'uci set firewall.$section.dest=${_shellQuote('*')}',
+        'uci set firewall.$section.src_mac=${_shellQuote(mac)}',
+        'uci set firewall.$section.proto=${_shellQuote('all')}',
+        'uci set firewall.$section.target=${_shellQuote('REJECT')}',
+        'uci set firewall.$section.family=${_shellQuote('any')}',
+        'uci set firewall.$section.enabled=${_shellQuote('1')}',
+        'uci commit firewall',
+        '/etc/init.d/firewall reload',
+      ].join(' && ');
+
+      final result = await _apiService!.systemExec(
+        router.ipAddress,
+        session.sysauth,
+        session.useHttps,
+        command: command,
+        context: context?.mounted == true ? context : null,
+      );
+      final success = _isRpcSuccess(result);
+      if (success) notifyListeners();
+      return success;
+    } catch (e, stack) {
+      Logger.exception('Failed to block client', e, stack);
+      return false;
+    }
+  }
+
+  Future<bool> unblockClient(Client client, {BuildContext? context}) async {
+    if (!_isBlockableMac(client.macAddress)) return false;
+    final mac = _normalizeClientMac(client.macAddress);
+
+    if (_reviewerModeEnabled) {
+      _mockBlockedClientMacs.remove(mac);
+      notifyListeners();
+      return true;
+    }
+
+    final router = _routerForClient(client);
+    if (router == null) return false;
+
+    try {
+      final session = await _sessionForRouter(router, context: context);
+      if (session == null) return false;
+
+      final section = _blockRuleSectionForMac(mac);
+      final existingRules = await _fetchBlockedRulesForRouter(
+        router,
+        context: context,
+      );
+      final deleteSections = {
+        section,
+        for (final rule in existingRules)
+          if (rule.macAddress == mac && _isSafeUciSection(rule.section))
+            rule.section,
+      };
+
+      final deleteCommands = deleteSections
+          .where(_isSafeUciSection)
+          .map((entry) => 'uci -q delete firewall.$entry || true')
+          .toList();
+      if (deleteCommands.isEmpty) return true;
+
+      final command = [
+        ...deleteCommands,
+        'uci commit firewall',
+        '/etc/init.d/firewall reload',
+      ].join(' && ');
+
+      final result = await _apiService!.systemExec(
+        router.ipAddress,
+        session.sysauth,
+        session.useHttps,
+        command: command,
+        context: context?.mounted == true ? context : null,
+      );
+      final success = _isRpcSuccess(result);
+      if (success) notifyListeners();
+      return success;
+    } catch (e, stack) {
+      Logger.exception('Failed to unblock client', e, stack);
+      return false;
+    }
+  }
+
   String _normalizeClientMac(String mac) {
-    return mac.toUpperCase().replaceAll('-', ':');
+    final hex = mac.replaceAll(RegExp(r'[^0-9a-fA-F]'), '');
+    if (hex.length == 12) {
+      final pairs = <String>[];
+      for (var i = 0; i < hex.length; i += 2) {
+        pairs.add(hex.substring(i, i + 2).toUpperCase());
+      }
+      return pairs.join(':');
+    }
+    return mac.trim().toUpperCase().replaceAll('-', ':');
+  }
+
+  String _blockIdForMac(String mac) {
+    return mac.replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toLowerCase();
+  }
+
+  bool _isBlockableMac(String mac) {
+    return _blockIdForMac(mac).length == 12;
+  }
+
+  String _blockRuleNameForMac(String mac) {
+    return '$_blockedRuleNamePrefix${_blockIdForMac(mac)}';
+  }
+
+  String _blockRuleSectionForMac(String mac) {
+    return '$_blockedRuleSectionPrefix${_blockIdForMac(mac)}';
+  }
+
+  String _routerDisplayName(model.Router router) {
+    final name = router.lastKnownHostname ?? '';
+    return name.isNotEmpty ? name : router.ipAddress;
+  }
+
+  model.Router? _routerForClient(Client client) {
+    final routers = _routerService?.routers ?? const <model.Router>[];
+    if (client.routerId != null) {
+      for (final router in routers) {
+        if (router.id == client.routerId) return router;
+      }
+    }
+    return _routerService?.selectedRouter;
+  }
+
+  String _shellQuote(String value) {
+    return "'${value.replaceAll("'", "'\"'\"'")}'";
+  }
+
+  bool _isSafeUciSection(String section) {
+    return RegExp(r'^[A-Za-z0-9_]+$').hasMatch(section);
+  }
+
+  dynamic _rpcData(dynamic result) {
+    if (result is List && result.length > 1 && result[0] == 0) {
+      return result[1];
+    }
+    return result;
+  }
+
+  bool _isRpcSuccess(dynamic result) {
+    if (result is List && result.isNotEmpty) {
+      if (result[0] != 0) return false;
+      if (result.length < 2) return true;
+      final data = result[1];
+      if (data is Map && data['code'] != null) {
+        return data['code'].toString() == '0';
+      }
+      return true;
+    }
+    return result != null;
+  }
+
+  Map<String, dynamic> _toStringKeyedMap(Map<dynamic, dynamic> map) {
+    return map.map((key, value) => MapEntry(key.toString(), value));
+  }
+
+  Map<String, dynamic> _firewallSectionsFromUciData(dynamic data) {
+    final rpcData = _rpcData(data);
+    if (rpcData is! Map) return {};
+
+    final map = _toStringKeyedMap(rpcData);
+    if (map['values'] is Map) {
+      return _toStringKeyedMap(map['values'] as Map);
+    }
+    if (map['firewall'] is Map) {
+      return _toStringKeyedMap(map['firewall'] as Map);
+    }
+    return map;
+  }
+
+  List<String> _macsFromFirewallValue(dynamic value) {
+    if (value == null) return const [];
+    if (value is List) {
+      return value.map((entry) => _normalizeClientMac(entry.toString())).toList();
+    }
+    return value
+        .toString()
+        .split(RegExp(r'[\s,]+'))
+        .map((entry) => _normalizeClientMac(entry))
+        .where(_isBlockableMac)
+        .toList();
+  }
+
+  List<_BlockedClientRule> _extractBlockedClientRules(
+    dynamic data, {
+    model.Router? router,
+  }) {
+    final sections = _firewallSectionsFromUciData(data);
+    final rules = <_BlockedClientRule>[];
+
+    sections.forEach((section, rawValue) {
+      if (rawValue is! Map) return;
+      final value = _toStringKeyedMap(rawValue);
+      final type = value['.type']?.toString() ?? value['type']?.toString();
+      final name = value['name']?.toString() ?? section;
+      final isAppRule = name.startsWith(_blockedRuleNamePrefix) ||
+          section.startsWith(_blockedRuleSectionPrefix);
+      if (type != null && type != 'rule') return;
+      if (!isAppRule) return;
+
+      for (final mac in _macsFromFirewallValue(value['src_mac'])) {
+        if (!_isBlockableMac(mac)) continue;
+        rules.add(
+          _BlockedClientRule(
+            macAddress: _normalizeClientMac(mac),
+            section: section,
+            router: router,
+          ),
+        );
+      }
+    });
+
+    return rules;
+  }
+
+  Future<_RouterSession?> _sessionForRouter(
+    model.Router router, {
+    BuildContext? context,
+  }) async {
+    final selected = _routerService?.selectedRouter;
+    if (selected?.id == router.id && _authService?.sysauth != null) {
+      return _RouterSession(
+        sysauth: _authService!.sysauth!,
+        useHttps: _authService!.useHttps,
+      );
+    }
+
+    if (_apiService is RealApiService) {
+      final real = _apiService as RealApiService;
+      final result = await real.loginWithProtocolDetection(
+        router.ipAddress,
+        router.username,
+        router.password,
+        router.useHttps,
+        context: context,
+      );
+      if (result.token != null) {
+        return _RouterSession(
+          sysauth: result.token!,
+          useHttps: result.actualUseHttps,
+        );
+      }
+    }
+
+    return null;
+  }
+
+  Future<List<_BlockedClientRule>> _fetchBlockedRulesForRouter(
+    model.Router router, {
+    BuildContext? context,
+  }) async {
+    final session = await _sessionForRouter(router, context: context);
+    if (session == null) return const [];
+
+    try {
+      final result = await _apiService!.call(
+        router.ipAddress,
+        session.sysauth,
+        session.useHttps,
+        object: 'uci',
+        method: 'get',
+        params: {'config': 'firewall'},
+        context: context?.mounted == true ? context : null,
+      );
+      return _extractBlockedClientRules(result, router: router);
+    } catch (e, stack) {
+      Logger.exception('Failed to fetch blocked client rules', e, stack);
+      return const [];
+    }
+  }
+
+  Future<Map<String, _BlockedClientRule>> _fetchBlockedRuleMapForRouters(
+    List<model.Router> routers, {
+    BuildContext? context,
+  }) async {
+    if (_reviewerModeEnabled) {
+      final router = _routerService?.selectedRouter;
+      return {
+        for (final mac in _mockBlockedClientMacs)
+          _normalizeClientMac(mac): _BlockedClientRule(
+            macAddress: _normalizeClientMac(mac),
+            section: _blockRuleSectionForMac(mac),
+            router: router,
+          ),
+      };
+    }
+
+    final tasks = routers.map(
+      (router) => _fetchBlockedRulesForRouter(router, context: context),
+    );
+    final results = await Future.wait(tasks);
+    final rules = <String, _BlockedClientRule>{};
+    for (final routerRules in results) {
+      for (final rule in routerRules) {
+        rules[rule.macAddress] = rule;
+      }
+    }
+    return rules;
   }
 
   Map<String, Map<String, dynamic>> _indexStationDetailsByMac(
@@ -1391,6 +1810,9 @@ class AppState extends ChangeNotifier {
       // Build a union of wireless station details across all routers
       final wirelessDetails = await fetchAssociatedStationDetailsAggregated();
       final normalizedWireless = wirelessDetails.keys.toSet();
+      final blockedRules = await _fetchBlockedRuleMapForRouters(
+        _routerService?.routers ?? const <model.Router>[],
+      );
 
       // Aggregate leases across routers
       final leases = await fetchAggregatedDhcpLeases();
@@ -1415,6 +1837,7 @@ class AppState extends ChangeNotifier {
             rawClient,
             isWireless: isWireless,
           ),
+          isBlocked: blockedRules.containsKey(macNorm),
         );
         // Prefer entries that have more info.
         final existing = clients[macNorm];
@@ -1429,6 +1852,7 @@ class AppState extends ChangeNotifier {
           clients[mac] = Client.fromWirelessStation(
             mac,
             stationDetails: wirelessDetails[mac],
+            isBlocked: blockedRules.containsKey(mac),
           );
         }
       }
@@ -1465,6 +1889,10 @@ class AppState extends ChangeNotifier {
       if (_reviewerModeEnabled) {
         final stationsMap = await _apiService!.fetchAssociatedStationDetails();
         final wirelessDetails = _indexStationDetailsByMac(stationsMap);
+        final selectedRouter = _routerService?.selectedRouter;
+        final blockedRules = await _fetchBlockedRuleMapForRouters(
+          selectedRouter == null ? const [] : [selectedRouter],
+        );
         final result = await _apiService!.callSimple(
           'luci-rpc',
           'getDHCPLeases',
@@ -1482,14 +1910,20 @@ class AppState extends ChangeNotifier {
         final normalizedMacs = wirelessDetails.keys.toSet();
         final clientMap = <String, Client>{};
         for (final l in leases) {
-          final rawClient = Client.fromLease(l);
+          final lease = {
+            ...l,
+            if (selectedRouter != null) 'routerId': selectedRouter.id,
+            if (selectedRouter != null)
+              'routerName': _routerDisplayName(selectedRouter),
+          };
+          final rawClient = Client.fromLease(lease);
           final macNorm = _normalizeClientMac(rawClient.macAddress);
           final isWireless =
               rawClient.connectionType != ConnectionType.wired &&
               normalizedMacs.contains(macNorm);
           final c = Client.fromLease(
             _leaseWithStationDetails(
-              l,
+              lease,
               isWireless ? wirelessDetails[macNorm] : null,
             ),
           );
@@ -1498,6 +1932,7 @@ class AppState extends ChangeNotifier {
               rawClient,
               isWireless: isWireless,
             ),
+            isBlocked: blockedRules.containsKey(macNorm),
           );
         }
         // Add wireless stations not in DHCP leases (AP-mode fallback)
@@ -1506,6 +1941,10 @@ class AppState extends ChangeNotifier {
             clientMap[mac] = Client.fromWirelessStation(
               mac,
               stationDetails: wirelessDetails[mac],
+              isBlocked: blockedRules.containsKey(mac),
+              routerId: selectedRouter?.id,
+              routerName:
+                  selectedRouter == null ? null : _routerDisplayName(selectedRouter),
             );
           }
         }
@@ -1541,6 +1980,7 @@ class AppState extends ChangeNotifier {
         useHttps: router.useHttps,
       );
       final wirelessDetails = _indexStationDetailsByMac(stationsMap);
+      final blockedRules = await _fetchBlockedRuleMapForRouters([router]);
 
       // Get DHCP leases for this router
       final callRes = await _apiService!.call(
@@ -1565,14 +2005,19 @@ class AppState extends ChangeNotifier {
 
       final clientMap = <String, Client>{};
       for (final l in leases) {
-        final rawClient = Client.fromLease(l);
+        final lease = {
+          ...l,
+          'routerId': router.id,
+          'routerName': _routerDisplayName(router),
+        };
+        final rawClient = Client.fromLease(lease);
         final macNorm = _normalizeClientMac(rawClient.macAddress);
         final isWireless =
             rawClient.connectionType != ConnectionType.wired &&
             normalizedWireless.contains(macNorm);
         final c = Client.fromLease(
           _leaseWithStationDetails(
-            l,
+            lease,
             isWireless ? wirelessDetails[macNorm] : null,
           ),
         );
@@ -1581,6 +2026,7 @@ class AppState extends ChangeNotifier {
             rawClient,
             isWireless: isWireless,
           ),
+          isBlocked: blockedRules.containsKey(macNorm),
         );
       }
 
@@ -1590,6 +2036,9 @@ class AppState extends ChangeNotifier {
           clientMap[mac] = Client.fromWirelessStation(
             mac,
             stationDetails: wirelessDetails[mac],
+            isBlocked: blockedRules.containsKey(mac),
+            routerId: router.id,
+            routerName: _routerDisplayName(router),
           );
         }
       }
@@ -1656,7 +2105,21 @@ class AppState extends ChangeNotifier {
               sysauth: res.token!,
               useHttps: res.actualUseHttps,
             );
-            return _indexStationDetailsByMac(map);
+            final withRouter = map.map((interface, stations) {
+              return MapEntry(
+                interface,
+                stations
+                    .map(
+                      (station) => {
+                        ...station,
+                        'routerId': r.id,
+                        'routerName': _routerDisplayName(r),
+                      },
+                    )
+                    .toList(),
+              );
+            });
+            return _indexStationDetailsByMac(withRouter);
           }
         } catch (e) {
           // Skip router on failure
@@ -1685,7 +2148,16 @@ class AppState extends ChangeNotifier {
           final data = result[1] as Map<String, dynamic>;
           final leases = (data['dhcp_leases'] as List<dynamic>? ?? [])
               .cast<Map<String, dynamic>>();
-          return leases;
+          final router = _routerService?.selectedRouter;
+          return leases
+              .map(
+                (lease) => {
+                  ...lease,
+                  if (router != null) 'routerId': router.id,
+                  if (router != null) 'routerName': _routerDisplayName(router),
+                },
+              )
+              .toList();
         }
         return [];
       }
@@ -1716,7 +2188,15 @@ class AppState extends ChangeNotifier {
               final data = callRes[1] as Map<String, dynamic>;
               final leases = (data['dhcp_leases'] as List<dynamic>? ?? [])
                   .cast<Map<String, dynamic>>();
-              return leases;
+              return leases
+                  .map(
+                    (lease) => {
+                      ...lease,
+                      'routerId': r.id,
+                      'routerName': _routerDisplayName(r),
+                    },
+                  )
+                  .toList();
             }
           }
         } catch (e) {

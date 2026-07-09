@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:luci_mobile/models/client.dart';
 import 'package:luci_mobile/main.dart';
+import 'package:luci_mobile/state/app_state.dart';
 import 'package:luci_mobile/widgets/luci_app_bar.dart';
 import 'package:luci_mobile/design/luci_design_system.dart';
 import 'package:luci_mobile/widgets/luci_loading_states.dart';
@@ -22,7 +23,7 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
   final Set<int> _expandedClientIndices = {};
   late AnimationController _controller;
   late TextEditingController _searchController;
-  bool _aggregateAllRouters = true;
+  ClientsViewMode _clientsViewMode = ClientsViewMode.all;
   Future<List<Client>>? _clientsFuture;
   String? _lastSelectedRouterId;
 
@@ -43,7 +44,7 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
     });
     // Initialize toggle from persisted state
     final initState = ref.read(appStateProvider);
-    _aggregateAllRouters = initState.clientsAggregateAllRouters;
+    _clientsViewMode = initState.clientsViewMode;
     _lastSelectedRouterId = initState.selectedRouter?.id;
     _computeClientsFuture();
 
@@ -51,9 +52,17 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
 
   void _computeClientsFuture() {
     final appState = ref.read(appStateProvider);
-    _clientsFuture = _aggregateAllRouters
-        ? appState.fetchAggregatedClients()
-        : appState.fetchClientsForSelectedRouter();
+    switch (_clientsViewMode) {
+      case ClientsViewMode.all:
+        _clientsFuture = appState.fetchAggregatedClients();
+        break;
+      case ClientsViewMode.selected:
+        _clientsFuture = appState.fetchClientsForSelectedRouter();
+        break;
+      case ClientsViewMode.blocked:
+        _clientsFuture = appState.fetchBlockedClients();
+        break;
+    }
   }
 
   @override
@@ -203,20 +212,25 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
                             horizontal: 16.0,
                             vertical: 4.0,
                           ),
-                          child: SegmentedButton<bool>(
+                          child: SegmentedButton<ClientsViewMode>(
                             segments: const [
-                              ButtonSegment<bool>(
-                                value: true,
+                              ButtonSegment<ClientsViewMode>(
+                                value: ClientsViewMode.all,
                                 label: Text('All'),
                                 icon: Icon(Icons.apartment),
                               ),
-                              ButtonSegment<bool>(
-                                value: false,
+                              ButtonSegment<ClientsViewMode>(
+                                value: ClientsViewMode.selected,
                                 label: Text('Selected'),
                                 icon: Icon(Icons.router),
                               ),
+                              ButtonSegment<ClientsViewMode>(
+                                value: ClientsViewMode.blocked,
+                                label: Text('Blocked'),
+                                icon: Icon(Icons.block),
+                              ),
                             ],
-                            selected: {_aggregateAllRouters},
+                            selected: {_clientsViewMode},
                             showSelectedIcon: false,
                             style: SegmentedButton.styleFrom(
                               visualDensity: VisualDensity.compact,
@@ -224,14 +238,14 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
                             ),
                             onSelectionChanged: (s) {
                               setState(() {
-                                _aggregateAllRouters = s.first;
+                                _clientsViewMode = s.first;
+                                _expandedClientIndices.clear();
                                 _computeClientsFuture();
                               });
                               // Persist selection
                               ref
                                   .read(appStateProvider)
-                                  .setClientsAggregateAllRouters(
-                                      _aggregateAllRouters);
+                                  .setClientsViewMode(_clientsViewMode);
                             },
                           ),
                         ),
@@ -239,12 +253,21 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
                           child: filteredClients.isEmpty
                               ? LuciEmptyState(
                                   title: _searchQuery.isEmpty
-                                      ? 'No Active Clients Found'
+                                      ? _clientsViewMode ==
+                                              ClientsViewMode.blocked
+                                          ? 'No Blocked Clients'
+                                          : 'No Active Clients Found'
                                       : 'No Matching Clients',
                                   message: _searchQuery.isEmpty
-                                      ? 'No clients are currently connected to the router. Pull down to refresh the list.'
+                                      ? _clientsViewMode ==
+                                              ClientsViewMode.blocked
+                                          ? 'No app-created client block rules were found.'
+                                          : 'No clients are currently connected to the router. Pull down to refresh the list.'
                                       : 'No clients match your search criteria. Try a different search term.',
-                                  icon: Icons.people_outline,
+                                  icon: _clientsViewMode ==
+                                          ClientsViewMode.blocked
+                                      ? Icons.block
+                                      : Icons.people_outline,
                                 )
                               : ListView.separated(
                                   padding: const EdgeInsets.only(bottom: 16),
@@ -268,6 +291,46 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
                                         child: _UnifiedClientCard(
                                           client: client,
                                           isExpanded: isExpanded,
+                                          onToggleBlocked: (client) async {
+                                            final appState = ref.read(
+                                              appStateProvider,
+                                            );
+                                            final success = client.isBlocked
+                                                ? await appState.unblockClient(
+                                                    client,
+                                                    context: context,
+                                                  )
+                                                : await appState.blockClient(
+                                                    client,
+                                                    context: context,
+                                                  );
+                                            if (!context.mounted) {
+                                              return success;
+                                            }
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                  success
+                                                      ? client.isBlocked
+                                                          ? 'Client unblocked'
+                                                          : 'Client blocked'
+                                                      : client.isBlocked
+                                                          ? 'Failed to unblock client'
+                                                          : 'Failed to block client',
+                                                ),
+                                                duration: const Duration(
+                                                  seconds: 2,
+                                                ),
+                                              ),
+                                            );
+                                            if (success && mounted) {
+                                              setState(() {
+                                                _computeClientsFuture();
+                                              });
+                                            }
+                                            return success;
+                                          },
                                           onTap: () {
                                             setState(() {
                                               if (isExpanded) {
@@ -306,11 +369,13 @@ class _UnifiedClientCard extends StatefulWidget {
   final Client client;
   final bool isExpanded;
   final VoidCallback onTap;
+  final Future<bool> Function(Client client) onToggleBlocked;
 
   const _UnifiedClientCard({
     required this.client,
     required this.isExpanded,
     required this.onTap,
+    required this.onToggleBlocked,
   });
 
   @override
@@ -320,6 +385,7 @@ class _UnifiedClientCard extends StatefulWidget {
 class _UnifiedClientCardState extends State<_UnifiedClientCard>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
+  bool _isTogglingBlocked = false;
 
   @override
   void initState() {
@@ -410,22 +476,24 @@ class _UnifiedClientCardState extends State<_UnifiedClientCard>
                           right: 0,
                           top: 0,
                           child: Tooltip(
-                            message:
-                                widget.client.connectionType ==
-                                    ConnectionType.unknown
-                                ? 'Unknown connection type'
-                                : 'Client is online',
+                            message: widget.client.isBlocked
+                                ? 'Client is blocked'
+                                : widget.client.connectionType ==
+                                        ConnectionType.unknown
+                                    ? 'Unknown connection type'
+                                    : 'Client is online',
                             child: Container(
                               width: 10,
                               height: 10,
                               decoration: BoxDecoration(
-                                color:
-                                    widget.client.connectionType ==
-                                            ConnectionType.wireless ||
-                                        widget.client.connectionType ==
-                                            ConnectionType.wired
-                                    ? Colors.green
-                                    : Colors.amber,
+                                color: widget.client.isBlocked
+                                    ? theme.colorScheme.error
+                                    : widget.client.connectionType ==
+                                                ConnectionType.wireless ||
+                                            widget.client.connectionType ==
+                                                ConnectionType.wired
+                                        ? Colors.green
+                                        : Colors.amber,
                                 shape: BoxShape.circle,
                                 border: Border.all(
                                   color: colorScheme.surface,
@@ -666,6 +734,12 @@ class _UnifiedClientCardState extends State<_UnifiedClientCard>
               client.dnsName!,
               semanticsLabel: 'DNS Name: ${client.dnsName}',
             ),
+          if (client.routerName != null && client.routerName!.isNotEmpty)
+            detailRow(
+              'Router',
+              client.routerName!,
+              semanticsLabel: 'Router: ${client.routerName}',
+            ),
           if (client.connectionType == ConnectionType.wireless &&
               client.hasWirelessMetrics) ...[
             const Divider(height: 1, indent: 16, endIndent: 16),
@@ -691,6 +765,60 @@ class _UnifiedClientCardState extends State<_UnifiedClientCard>
                 : null,
             semanticsLabel:
                 'Lease Time Remaining: ${client.formattedLeaseTime}',
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              LuciSpacing.md,
+              LuciSpacing.sm,
+              LuciSpacing.md,
+              LuciSpacing.sm,
+            ),
+            child: SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: _isTogglingBlocked || client.macAddress == 'N/A'
+                    ? null
+                    : () async {
+                        setState(() {
+                          _isTogglingBlocked = true;
+                        });
+                        await widget.onToggleBlocked(client);
+                        if (!mounted) return;
+                        setState(() {
+                          _isTogglingBlocked = false;
+                        });
+                      },
+                icon: _isTogglingBlocked
+                    ? SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: theme.colorScheme.onPrimary,
+                        ),
+                      )
+                    : Icon(
+                        client.isBlocked
+                            ? Icons.lock_open_outlined
+                            : Icons.block,
+                      ),
+                label: Text(
+                  _isTogglingBlocked
+                      ? client.isBlocked
+                          ? 'Unblocking...'
+                          : 'Blocking...'
+                      : client.isBlocked
+                          ? 'Unblock Client'
+                          : 'Block Client',
+                ),
+                style: client.isBlocked
+                    ? null
+                    : FilledButton.styleFrom(
+                        backgroundColor: theme.colorScheme.error,
+                        foregroundColor: theme.colorScheme.onError,
+                      ),
+              ),
+            ),
           ),
           const SizedBox(height: 8),
         ],
