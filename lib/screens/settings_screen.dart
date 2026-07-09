@@ -2,7 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:luci_mobile/main.dart';
+import 'package:luci_mobile/state/app_state.dart';
+import 'package:luci_mobile/utils/logger.dart';
 import 'package:luci_mobile/widgets/luci_app_bar.dart';
 import 'package:luci_mobile/screens/dashboard_settings_list_screen.dart';
 
@@ -11,35 +14,72 @@ class SettingsScreen extends ConsumerWidget {
 
   void _showReviewerModeResetDialog(BuildContext context, WidgetRef ref) {
     final appState = ref.read(appStateProvider);
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Exit Reviewer Mode?'),
-        content: const Text(
-          'This will disable reviewer mode and return to normal authentication. '
-          'You will need to log in with real router credentials.',
+    unawaited(
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Exit Reviewer Mode?'),
+          content: const Text(
+            'This will disable reviewer mode and return to normal authentication. '
+            'You will need to log in with real router credentials.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                await appState.setReviewerMode(false);
+                appState.logout();
+                if (context.mounted) {
+                  unawaited(
+                    Navigator.of(
+                      context,
+                    ).pushNamedAndRemoveUntil('/login', (route) => false),
+                  );
+                }
+              },
+              child: const Text('Exit'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              await appState.setReviewerMode(false);
-              appState.logout();
-              if (context.mounted) {
-                unawaited(
-                  Navigator.of(
-                    context,
-                  ).pushNamedAndRemoveUntil('/login', (route) => false),
-                );
-              }
-            },
-            child: const Text('Exit'),
-          ),
-        ],
+      ),
+    );
+  }
+
+  String _buildDebugLog(AppState appState) {
+    final selectedRouter = appState.selectedRouter;
+    final selectedRouterProtocol = selectedRouter == null
+        ? 'none'
+        : selectedRouter.useHttps
+            ? 'https'
+            : 'http';
+    return [
+      'LuCI Mobile Debug Log',
+      'Generated: ${DateTime.now().toIso8601String()}',
+      'Reviewer mode: ${appState.reviewerModeEnabled}',
+      'Configured routers: ${appState.routers.length}',
+      'Selected router: ${selectedRouter?.ipAddress ?? 'none'}',
+      'Selected router protocol: $selectedRouterProtocol',
+      '',
+      Logger.exportLog(),
+    ].join('\n');
+  }
+
+  Future<void> _copyDebugLog(BuildContext context, WidgetRef ref) async {
+    final appState = ref.read(appStateProvider);
+    final debugLog = _buildDebugLog(appState);
+    await Clipboard.setData(
+      ClipboardData(text: debugLog),
+    );
+    Logger.info('Debug log copied from settings');
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Debug log copied to clipboard'),
+        duration: Duration(seconds: 2),
       ),
     );
   }
@@ -69,7 +109,9 @@ class SettingsScreen extends ConsumerWidget {
                   RadioGroup<ThemeMode>(
                     groupValue: appState.themeMode,
                     onChanged: (mode) {
-                      if (mode != null) appState.setThemeMode(mode);
+                      if (mode != null) {
+                        unawaited(appState.setThemeMode(mode));
+                      }
                     },
                     child: Column(
                       children: [
@@ -99,7 +141,10 @@ class SettingsScreen extends ConsumerWidget {
                     ),
                   ),
                   Card(
-                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
                     elevation: 2,
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
@@ -128,12 +173,66 @@ class SettingsScreen extends ConsumerWidget {
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
                       onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (context) =>
-                                const DashboardSettingsListScreen(),
+                        unawaited(
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  const DashboardSettingsListScreen(),
+                            ),
                           ),
                         );
+                      },
+                    ),
+                  ),
+                  const Divider(height: 32),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    child: Text(
+                      'Diagnostics',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  Card(
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: ListTile(
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.secondaryContainer,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.bug_report_outlined,
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.onSecondaryContainer,
+                          size: 24,
+                        ),
+                      ),
+                      title: const Text(
+                        'Copy Debug Log',
+                        style: TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: const Text(
+                        'Includes recent app errors, router IPs, and client MAC addresses.',
+                      ),
+                      trailing: Icon(
+                        Icons.copy_outlined,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                      onTap: () {
+                        unawaited(_copyDebugLog(context, ref));
                       },
                     ),
                   ),

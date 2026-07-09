@@ -1363,24 +1363,46 @@ class AppState extends ChangeNotifier {
   }
 
   Future<bool> blockClient(Client client, {BuildContext? context}) async {
-    if (!_isBlockableMac(client.macAddress)) return false;
+    if (!_isBlockableMac(client.macAddress)) {
+      Logger.warning(
+        'Block client rejected: invalid MAC "${client.macAddress}"',
+      );
+      return false;
+    }
     final mac = _normalizeClientMac(client.macAddress);
 
     if (_reviewerModeEnabled) {
+      Logger.info('Reviewer mode block client: mac=$mac');
       _mockBlockedClientMacs.add(mac);
       notifyListeners();
       return true;
     }
 
     final router = _routerForClient(client);
-    if (router == null) return false;
+    if (router == null) {
+      Logger.warning(
+        'Block client rejected: no target router for mac=$mac '
+        'clientRouterId=${client.routerId ?? 'none'}',
+      );
+      return false;
+    }
 
     try {
       final session = await _sessionForRouter(router, context: context);
-      if (session == null) return false;
+      if (session == null) {
+        Logger.warning(
+          'Block client failed: could not authenticate router='
+          '${router.ipAddress} mac=$mac',
+        );
+        return false;
+      }
 
       final section = _blockRuleSectionForMac(mac);
       final name = _blockRuleNameForMac(mac);
+      Logger.info(
+        'Creating client block rule router=${router.ipAddress} '
+        'mac=$mac section=$section',
+      );
       final existingRules = await _fetchBlockedRulesForRouter(
         router,
         context: context,
@@ -1409,6 +1431,7 @@ class AppState extends ChangeNotifier {
         'uci commit firewall',
         '/etc/init.d/firewall reload',
       ].join(' && ');
+      Logger.debug('Block client command: $command');
 
       final result = await _apiService!.systemExec(
         router.ipAddress,
@@ -1417,8 +1440,16 @@ class AppState extends ChangeNotifier {
         command: command,
         context: context?.mounted == true ? context : null,
       );
+      Logger.debug('Block client RPC result: ${_formatDebugValue(result)}');
       final success = _isRpcSuccess(result);
-      if (success) notifyListeners();
+      if (success) {
+        notifyListeners();
+      } else {
+        Logger.warning(
+          'Block client command returned failure router=${router.ipAddress} '
+          'mac=$mac result=${_formatDebugValue(result)}',
+        );
+      }
       return success;
     } catch (e, stack) {
       Logger.exception('Failed to block client', e, stack);
@@ -1427,23 +1458,45 @@ class AppState extends ChangeNotifier {
   }
 
   Future<bool> unblockClient(Client client, {BuildContext? context}) async {
-    if (!_isBlockableMac(client.macAddress)) return false;
+    if (!_isBlockableMac(client.macAddress)) {
+      Logger.warning(
+        'Unblock client rejected: invalid MAC "${client.macAddress}"',
+      );
+      return false;
+    }
     final mac = _normalizeClientMac(client.macAddress);
 
     if (_reviewerModeEnabled) {
+      Logger.info('Reviewer mode unblock client: mac=$mac');
       _mockBlockedClientMacs.remove(mac);
       notifyListeners();
       return true;
     }
 
     final router = _routerForClient(client);
-    if (router == null) return false;
+    if (router == null) {
+      Logger.warning(
+        'Unblock client rejected: no target router for mac=$mac '
+        'clientRouterId=${client.routerId ?? 'none'}',
+      );
+      return false;
+    }
 
     try {
       final session = await _sessionForRouter(router, context: context);
-      if (session == null) return false;
+      if (session == null) {
+        Logger.warning(
+          'Unblock client failed: could not authenticate router='
+          '${router.ipAddress} mac=$mac',
+        );
+        return false;
+      }
 
       final section = _blockRuleSectionForMac(mac);
+      Logger.info(
+        'Removing client block rule router=${router.ipAddress} '
+        'mac=$mac section=$section',
+      );
       final existingRules = await _fetchBlockedRulesForRouter(
         router,
         context: context,
@@ -1459,13 +1512,17 @@ class AppState extends ChangeNotifier {
           .where(_isSafeUciSection)
           .map((entry) => 'uci -q delete firewall.$entry || true')
           .toList();
-      if (deleteCommands.isEmpty) return true;
+      if (deleteCommands.isEmpty) {
+        Logger.info('No client block rules found to remove for mac=$mac');
+        return true;
+      }
 
       final command = [
         ...deleteCommands,
         'uci commit firewall',
         '/etc/init.d/firewall reload',
       ].join(' && ');
+      Logger.debug('Unblock client command: $command');
 
       final result = await _apiService!.systemExec(
         router.ipAddress,
@@ -1474,8 +1531,16 @@ class AppState extends ChangeNotifier {
         command: command,
         context: context?.mounted == true ? context : null,
       );
+      Logger.debug('Unblock client RPC result: ${_formatDebugValue(result)}');
       final success = _isRpcSuccess(result);
-      if (success) notifyListeners();
+      if (success) {
+        notifyListeners();
+      } else {
+        Logger.warning(
+          'Unblock client command returned failure router=${router.ipAddress} '
+          'mac=$mac result=${_formatDebugValue(result)}',
+        );
+      }
       return success;
     } catch (e, stack) {
       Logger.exception('Failed to unblock client', e, stack);
@@ -1552,6 +1617,13 @@ class AppState extends ChangeNotifier {
       return true;
     }
     return result != null;
+  }
+
+  String _formatDebugValue(dynamic value) {
+    final text = value.toString();
+    const maxLength = 2000;
+    if (text.length <= maxLength) return text;
+    return '${text.substring(0, maxLength)}...<truncated>';
   }
 
   Map<String, dynamic> _toStringKeyedMap(Map<dynamic, dynamic> map) {
