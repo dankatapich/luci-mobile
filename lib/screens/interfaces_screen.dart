@@ -1,9 +1,11 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:luci_mobile/main.dart';
 import 'package:flutter/services.dart';
 import 'package:luci_mobile/models/interface.dart';
-import 'dart:math';
 import 'package:luci_mobile/widgets/luci_app_bar.dart';
 import 'package:luci_mobile/design/luci_design_system.dart';
 import 'package:luci_mobile/widgets/luci_loading_states.dart';
@@ -547,6 +549,7 @@ class _InterfacesScreenState extends ConsumerState<InterfacesScreen> {
               'isEnabled': isEnabled,
               'deviceName': deviceName,
               'radioName': radioName,
+              'uciSection': uciName ?? '',
               'ssid': ssid,
               'interfaceName': name,
               'details': {
@@ -583,6 +586,7 @@ class _InterfacesScreenState extends ConsumerState<InterfacesScreen> {
           'isEnabled': isEnabled,
           'deviceName': radioName,
           'radioName': radioName,
+          'uciSection': uciName,
           'ssid': name,
           'interfaceName': name,
           'details': {
@@ -608,6 +612,7 @@ class _InterfacesScreenState extends ConsumerState<InterfacesScreen> {
         final radioName = iface['radioName'] ?? '';
         final ssid = iface['ssid'] ?? '';
         final name = iface['interfaceName'] ?? '';
+        final uciSection = iface['uciSection']?.toString() ?? '';
         // Use the stored values for key generation
         final keyStr = _interfaceKeyForWireless(
           ssid: ssid,
@@ -641,10 +646,157 @@ class _InterfacesScreenState extends ConsumerState<InterfacesScreen> {
             icon: Icons.wifi,
             details: _buildGenericDetails(context, iface['details']),
             initiallyExpanded: shouldExpand,
+            onSettings: uciSection.isEmpty
+                ? null
+                : () {
+                    unawaited(_showWirelessSettingsDialog(context, iface));
+                  },
           ),
         );
       }, childCount: interfaces.length),
     );
+  }
+
+  Future<void> _showWirelessSettingsDialog(
+    BuildContext context,
+    Map<String, dynamic> iface,
+  ) async {
+    final appState = ref.read(appStateProvider);
+    final section = iface['uciSection']?.toString() ?? '';
+    final ssidController = TextEditingController(
+      text: iface['ssid']?.toString() ?? '',
+    );
+    final passwordController = TextEditingController();
+    var enabled = iface['isEnabled'] == true;
+    var obscurePassword = true;
+    var isSaving = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final password = passwordController.text.trim();
+            final passwordValid = password.isEmpty || password.length >= 8;
+            final canSave =
+                !isSaving &&
+                section.isNotEmpty &&
+                ssidController.text.trim().isNotEmpty &&
+                passwordValid;
+
+            return AlertDialog(
+              title: const Text('Wi-Fi Settings'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Enabled'),
+                      value: enabled,
+                      onChanged: isSaving
+                          ? null
+                          : (value) {
+                              setDialogState(() {
+                                enabled = value;
+                              });
+                            },
+                    ),
+                    TextField(
+                      controller: ssidController,
+                      enabled: !isSaving,
+                      decoration: const InputDecoration(
+                        labelText: 'Wi-Fi Name',
+                        prefixIcon: Icon(Icons.wifi),
+                      ),
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                    const SizedBox(height: LuciSpacing.md),
+                    TextField(
+                      controller: passwordController,
+                      enabled: !isSaving,
+                      obscureText: obscurePassword,
+                      decoration: InputDecoration(
+                        labelText: 'New Password',
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            obscurePassword
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                          ),
+                          onPressed: isSaving
+                              ? null
+                              : () {
+                                  setDialogState(() {
+                                    obscurePassword = !obscurePassword;
+                                  });
+                                },
+                        ),
+                        errorText: passwordValid
+                            ? null
+                            : 'Use at least 8 characters',
+                      ),
+                      onChanged: (_) => setDialogState(() {}),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving
+                      ? null
+                      : () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton.icon(
+                  onPressed: canSave
+                      ? () async {
+                          setDialogState(() {
+                            isSaving = true;
+                          });
+                          final success =
+                              await appState.updateWirelessInterfaceSettings(
+                            section: section,
+                            enabled: enabled,
+                            ssid: ssidController.text,
+                            password: passwordController.text.trim().isEmpty
+                                ? null
+                                : passwordController.text,
+                            context: dialogContext,
+                          );
+                          if (!dialogContext.mounted) return;
+                          Navigator.of(dialogContext).pop();
+                          if (!context.mounted) return;
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                success
+                                    ? 'Wi-Fi settings saved'
+                                    : 'Failed to save Wi-Fi settings',
+                              ),
+                            ),
+                          );
+                        }
+                      : null,
+                  icon: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save_outlined),
+                  label: const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    ssidController.dispose();
+    passwordController.dispose();
   }
 
   Widget _buildWiredDetails(BuildContext context, NetworkInterface interface) {
@@ -1084,6 +1236,7 @@ class _UnifiedNetworkCard extends StatefulWidget {
   final IconData icon;
   final Widget details;
   final bool initiallyExpanded;
+  final VoidCallback? onSettings;
 
   const _UnifiedNetworkCard({
     required this.name,
@@ -1092,6 +1245,7 @@ class _UnifiedNetworkCard extends StatefulWidget {
     required this.icon,
     required this.details,
     this.initiallyExpanded = false,
+    this.onSettings,
     super.key,
   });
 
@@ -1259,6 +1413,15 @@ class _UnifiedNetworkCardState extends State<_UnifiedNetworkCard>
                           context,
                           'OFF',
                           false,
+                        ),
+                      ),
+                    if (widget.onSettings != null)
+                      Tooltip(
+                        message: 'Edit Wi-Fi settings',
+                        child: IconButton(
+                          icon: const Icon(Icons.tune),
+                          onPressed: widget.onSettings,
+                          visualDensity: VisualDensity.compact,
                         ),
                       ),
                     const SizedBox(width: LuciSpacing.sm),

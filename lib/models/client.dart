@@ -268,15 +268,15 @@ class Client {
 
   factory Client.blocked({
     required String macAddress,
-    String? ipAddress,
-    String? hostname,
+    required String ipAddress,
+    required String hostname,
     String? routerId,
     String? routerName,
   }) {
     return Client(
-      ipAddress: ipAddress ?? 'N/A',
+      ipAddress: ipAddress,
       macAddress: macAddress,
-      hostname: hostname ?? 'Blocked Device',
+      hostname: hostname,
       connectionType: ConnectionType.unknown,
       isBlocked: true,
       routerId: routerId,

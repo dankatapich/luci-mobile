@@ -32,17 +32,5 @@ void main() {
       expect(client.isBlocked, isTrue);
       expect(client.routerName, 'Office Router');
     });
-
-    test('creates offline blocked client without saved metadata', () {
-      final client = Client.blocked(
-        macAddress: '24:E4:CE:7C:50:56',
-        routerId: 'router-1',
-        routerName: 'Office Router',
-      );
-
-      expect(client.hostname, 'Blocked Device');
-      expect(client.ipAddress, 'N/A');
-      expect(client.isBlocked, isTrue);
-    });
   });
 }

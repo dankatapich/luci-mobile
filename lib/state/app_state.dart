@@ -34,15 +34,15 @@ class _RouterSession {
 class _BlockedClientRule {
   final String macAddress;
   final String section;
-  final String? ipAddress;
-  final String? hostname;
+  final String ipAddress;
+  final String hostname;
   final model.Router? router;
 
   _BlockedClientRule({
     required this.macAddress,
     required this.section,
-    this.ipAddress,
-    this.hostname,
+    required this.ipAddress,
+    required this.hostname,
     this.router,
   });
 }
@@ -1260,7 +1260,7 @@ class AppState extends ChangeNotifier {
 
     try {
       // 1. Set the disabled state
-      await _apiService!.uciSet(
+      final setResult = await _apiService!.uciSet(
         _authService!.ipAddress!,
         _authService!.sysauth!,
         _authService!.useHttps,
@@ -1269,24 +1269,19 @@ class AppState extends ChangeNotifier {
         values: {'disabled': enabled ? '0' : '1'},
         context: context,
       );
+      if (!_isRpcSuccess(setResult)) {
+        Logger.warning(
+          'Failed to set wireless radio state: '
+          '${_formatDebugValue(setResult)}',
+        );
+        return false;
+      }
 
-      // 2. Commit the changes
-      await _apiService!.uciCommit(
-        _authService!.ipAddress!,
-        _authService!.sysauth!,
-        _authService!.useHttps,
-        config: 'wireless',
-        context: context?.mounted == true ? context : null,
+      final applied = await _applySelectedRouterConfigChanges(
+        'wireless',
+        context: context,
       );
-
-      // 3. Reload wifi to apply changes
-      await _apiService!.systemExec(
-        _authService!.ipAddress!,
-        _authService!.sysauth!,
-        _authService!.useHttps,
-        command: 'wifi reload',
-        context: context?.mounted == true ? context : null,
-      );
+      if (!applied) return false;
 
       // Refresh dashboard data to reflect the change
       await fetchDashboardData();
@@ -1295,6 +1290,137 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       _dashboardError = 'Failed to toggle Wi-Fi: $e';
       notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> updateWirelessInterfaceSettings({
+    required String section,
+    required bool enabled,
+    required String ssid,
+    String? password,
+    BuildContext? context,
+  }) async {
+    if (_reviewerModeEnabled) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      await fetchDashboardData();
+      return true;
+    }
+
+    if (_authService?.sysauth == null || _authService?.ipAddress == null) {
+      return false;
+    }
+
+    final trimmedSsid = ssid.trim();
+    if (section.trim().isEmpty || trimmedSsid.isEmpty) {
+      return false;
+    }
+
+    final values = <String, String>{
+      'ssid': trimmedSsid,
+      'disabled': enabled ? '0' : '1',
+    };
+    final trimmedPassword = password?.trim();
+    if (trimmedPassword != null && trimmedPassword.isNotEmpty) {
+      values['key'] = trimmedPassword;
+      values['encryption'] = 'psk2';
+    }
+
+    try {
+      final setResult = await _apiService!.uciSet(
+        _authService!.ipAddress!,
+        _authService!.sysauth!,
+        _authService!.useHttps,
+        config: 'wireless',
+        section: section,
+        values: values,
+        context: context,
+      );
+      if (!_isRpcSuccess(setResult)) {
+        Logger.warning(
+          'Failed to set Wi-Fi settings: ${_formatDebugValue(setResult)}',
+        );
+        return false;
+      }
+
+      final applied = await _applySelectedRouterConfigChanges(
+        'wireless',
+        context: context,
+      );
+      if (!applied) return false;
+
+      await fetchDashboardData();
+      return true;
+    } catch (e, stack) {
+      Logger.exception('Failed to update Wi-Fi settings', e, stack);
+      _dashboardError = 'Failed to update Wi-Fi settings: $e';
+      notifyListeners();
+      return false;
+    }
+  }
+
+  Future<bool> _applySelectedRouterConfigChanges(
+    String config, {
+    BuildContext? context,
+  }) async {
+    if (_authService?.sysauth == null || _authService?.ipAddress == null) {
+      return false;
+    }
+
+    try {
+      final applyResult = await _apiService!.call(
+        _authService!.ipAddress!,
+        _authService!.sysauth!,
+        _authService!.useHttps,
+        object: 'uci',
+        method: 'apply',
+        params: {'rollback': false},
+        context: context?.mounted == true ? context : null,
+      );
+      if (_isRpcSuccess(applyResult)) {
+        return true;
+      }
+      Logger.warning(
+        'uci.apply failed for $config: ${_formatDebugValue(applyResult)}',
+      );
+    } catch (e, stack) {
+      Logger.exception('uci.apply failed for $config', e, stack);
+    }
+
+    try {
+      final commitResult = await _apiService!.uciCommit(
+        _authService!.ipAddress!,
+        _authService!.sysauth!,
+        _authService!.useHttps,
+        config: config,
+        context: context?.mounted == true ? context : null,
+      );
+      if (!_isRpcSuccess(commitResult)) {
+        Logger.warning(
+          'uci.commit failed for $config: ${_formatDebugValue(commitResult)}',
+        );
+        return false;
+      }
+
+      final reloadResult = await _apiService!.call(
+        _authService!.ipAddress!,
+        _authService!.sysauth!,
+        _authService!.useHttps,
+        object: 'uci',
+        method: 'reload_config',
+        params: const <String, dynamic>{},
+        context: context?.mounted == true ? context : null,
+      );
+      if (!_isRpcSuccess(reloadResult)) {
+        Logger.warning(
+          'uci.reload_config failed for $config: '
+          '${_formatDebugValue(reloadResult)}',
+        );
+        return false;
+      }
+      return true;
+    } catch (e, stack) {
+      Logger.exception('Config apply fallback failed for $config', e, stack);
       return false;
     }
   }
@@ -1627,14 +1753,10 @@ class AppState extends ChangeNotifier {
       'family': 'any',
       'enabled': '1',
     };
-    final hostname = _blockedMetadataValue(client.hostname);
-    final ipAddress = _blockedMetadataValue(client.ipAddress);
-    if (hostname != null && hostname != 'Unknown') {
-      values[_blockedRuleHostnameOption] = hostname;
-    }
-    if (ipAddress != null && ipAddress != 'N/A') {
-      values[_blockedRuleIpOption] = ipAddress;
-    }
+    values[_blockedRuleHostnameOption] =
+        _blockedMetadataValue(client.hostname) ?? 'Unknown';
+    values[_blockedRuleIpOption] =
+        _blockedMetadataValue(client.ipAddress) ?? 'N/A';
     return values;
   }
 
@@ -1847,6 +1969,7 @@ class AppState extends ChangeNotifier {
       final ipAddress = _blockedMetadataValue(
         value[_blockedRuleIpOption]?.toString(),
       );
+      if (hostname == null || ipAddress == null) return;
       for (final mac in _macsFromFirewallValue(value['src_mac'])) {
         if (!_isBlockableMac(mac)) continue;
         rules.add(
@@ -1931,6 +2054,8 @@ class AppState extends ChangeNotifier {
           _normalizeClientMac(mac): _BlockedClientRule(
             macAddress: _normalizeClientMac(mac),
             section: _blockRuleSectionForMac(mac),
+            ipAddress: 'N/A',
+            hostname: 'Blocked Device',
             router: router,
           ),
       };
