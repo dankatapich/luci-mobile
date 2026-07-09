@@ -53,6 +53,23 @@ void main() {
       expect(classified.connectionType, ConnectionType.unknown);
     });
 
+    test('clients list can show non-wireless DHCP lease as wired', () {
+      final leaseClient = Client.fromLease({
+        'macaddr': '24:e4:ce:7c:50:56',
+        'ipaddr': '192.168.200.21',
+        'hostname': 'Android-TV-Panasonic',
+      });
+
+      final classified = leaseClient.copyWith(
+        connectionType: _connectionTypeForDhcpLease(
+          leaseClient,
+          isWireless: false,
+        ),
+      );
+
+      expect(classified.connectionType, ConnectionType.wired);
+    });
+
     test('wired Android device should not be marked wireless by hostname', () {
       final lease = {
         'macaddr': '24:e4:ce:7c:50:56',
@@ -108,4 +125,18 @@ void main() {
       expect(classified.connectionType, ConnectionType.wired);
     });
   });
+}
+
+ConnectionType _connectionTypeForDhcpLease(
+  Client leaseClient, {
+  required bool isWireless,
+}) {
+  if (isWireless) return ConnectionType.wireless;
+  if (leaseClient.connectionType == ConnectionType.wireless) {
+    return ConnectionType.unknown;
+  }
+  if (leaseClient.connectionType == ConnectionType.unknown) {
+    return ConnectionType.wired;
+  }
+  return leaseClient.connectionType;
 }

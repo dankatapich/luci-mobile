@@ -1324,6 +1324,20 @@ class AppState extends ChangeNotifier {
     return merged;
   }
 
+  ConnectionType _connectionTypeForDhcpLease(
+    Client leaseClient, {
+    required bool isWireless,
+  }) {
+    if (isWireless) return ConnectionType.wireless;
+    if (leaseClient.connectionType == ConnectionType.wireless) {
+      return ConnectionType.unknown;
+    }
+    if (leaseClient.connectionType == ConnectionType.unknown) {
+      return ConnectionType.wired;
+    }
+    return leaseClient.connectionType;
+  }
+
   bool _shouldReplaceClient(Client current, Client candidate) {
     if (!current.hasWirelessMetrics && candidate.hasWirelessMetrics) {
       return true;
@@ -1396,11 +1410,12 @@ class AppState extends ChangeNotifier {
             isWireless ? stationDetails : null,
           ),
         );
-        // If confirmed wireless by assoclist, mark wireless; otherwise keep
-        // the lease's explicit wired/unknown classification.
-        final enriched = isWireless
-            ? client.copyWith(connectionType: ConnectionType.wireless)
-            : client;
+        final enriched = client.copyWith(
+          connectionType: _connectionTypeForDhcpLease(
+            rawClient,
+            isWireless: isWireless,
+          ),
+        );
         // Prefer entries that have more info.
         final existing = clients[macNorm];
         if (existing == null || _shouldReplaceClient(existing, enriched)) {
@@ -1478,9 +1493,12 @@ class AppState extends ChangeNotifier {
               isWireless ? wirelessDetails[macNorm] : null,
             ),
           );
-          clientMap[macNorm] = isWireless
-              ? c.copyWith(connectionType: ConnectionType.wireless)
-              : c;
+          clientMap[macNorm] = c.copyWith(
+            connectionType: _connectionTypeForDhcpLease(
+              rawClient,
+              isWireless: isWireless,
+            ),
+          );
         }
         // Add wireless stations not in DHCP leases (AP-mode fallback)
         for (final mac in normalizedMacs) {
@@ -1558,9 +1576,12 @@ class AppState extends ChangeNotifier {
             isWireless ? wirelessDetails[macNorm] : null,
           ),
         );
-        clientMap[macNorm] = isWireless
-            ? c.copyWith(connectionType: ConnectionType.wireless)
-            : c;
+        clientMap[macNorm] = c.copyWith(
+          connectionType: _connectionTypeForDhcpLease(
+            rawClient,
+            isWireless: isWireless,
+          ),
+        );
       }
 
       // Add wireless stations not in DHCP leases (AP-mode fallback)
