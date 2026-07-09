@@ -21,6 +21,21 @@ void main() {
     test('creates offline blocked client from firewall rule', () {
       final client = Client.blocked(
         macAddress: '24:E4:CE:7C:50:56',
+        ipAddress: '192.168.200.21',
+        hostname: 'Android-TV-Panasonic',
+        routerId: 'router-1',
+        routerName: 'Office Router',
+      );
+
+      expect(client.hostname, 'Android-TV-Panasonic');
+      expect(client.ipAddress, '192.168.200.21');
+      expect(client.isBlocked, isTrue);
+      expect(client.routerName, 'Office Router');
+    });
+
+    test('creates offline blocked client without saved metadata', () {
+      final client = Client.blocked(
+        macAddress: '24:E4:CE:7C:50:56',
         routerId: 'router-1',
         routerName: 'Office Router',
       );
@@ -28,7 +43,6 @@ void main() {
       expect(client.hostname, 'Blocked Device');
       expect(client.ipAddress, 'N/A');
       expect(client.isBlocked, isTrue);
-      expect(client.routerName, 'Office Router');
     });
   });
 }

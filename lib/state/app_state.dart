@@ -34,11 +34,15 @@ class _RouterSession {
 class _BlockedClientRule {
   final String macAddress;
   final String section;
+  final String? ipAddress;
+  final String? hostname;
   final model.Router? router;
 
   _BlockedClientRule({
     required this.macAddress,
     required this.section,
+    this.ipAddress,
+    this.hostname,
     this.router,
   });
 }
@@ -83,6 +87,8 @@ class AppState extends ChangeNotifier {
   static const String _clientsAggregateKey = 'clients_aggregate_all';
   static const String _blockedRuleNamePrefix = 'luci-app-';
   static const String _blockedRuleSectionPrefix = 'luci_app_block_';
+  static const String _blockedRuleHostnameOption = 'luci_mobile_hostname';
+  static const String _blockedRuleIpOption = 'luci_mobile_ipaddr';
   final Set<String> _mockBlockedClientMacs = {};
   ClientsViewMode get clientsViewMode => _clientsViewMode;
   bool get clientsAggregateAllRouters =>
@@ -1334,6 +1340,8 @@ class AppState extends ChangeNotifier {
           final router = rule?.router;
           clients[mac] = client.copyWith(
             isBlocked: true,
+            ipAddress: client.ipAddress == 'N/A' ? rule?.ipAddress : null,
+            hostname: client.hostname == 'Unknown' ? rule?.hostname : null,
             routerId: client.routerId ?? router?.id,
             routerName: client.routerName ??
                 (router == null ? null : _routerDisplayName(router)),
@@ -1346,6 +1354,8 @@ class AppState extends ChangeNotifier {
           rule.macAddress,
           () => Client.blocked(
             macAddress: rule.macAddress,
+            ipAddress: rule.ipAddress,
+            hostname: rule.hostname,
             routerId: rule.router?.id,
             routerName:
                 rule.router == null ? null : _routerDisplayName(rule.router!),
@@ -1436,6 +1446,7 @@ class AppState extends ChangeNotifier {
           'type': 'rule',
           'name': section,
           'values': _firewallBlockRuleValues(
+            client: client,
             mac: mac,
             name: name,
           ),
@@ -1602,10 +1613,11 @@ class AppState extends ChangeNotifier {
   }
 
   Map<String, String> _firewallBlockRuleValues({
+    required Client client,
     required String mac,
     required String name,
   }) {
-    return {
+    final values = {
       'name': name,
       'src': '*',
       'dest': '*',
@@ -1615,6 +1627,21 @@ class AppState extends ChangeNotifier {
       'family': 'any',
       'enabled': '1',
     };
+    final hostname = _blockedMetadataValue(client.hostname);
+    final ipAddress = _blockedMetadataValue(client.ipAddress);
+    if (hostname != null && hostname != 'Unknown') {
+      values[_blockedRuleHostnameOption] = hostname;
+    }
+    if (ipAddress != null && ipAddress != 'N/A') {
+      values[_blockedRuleIpOption] = ipAddress;
+    }
+    return values;
+  }
+
+  String? _blockedMetadataValue(String? value) {
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) return null;
+    return trimmed;
   }
 
   Future<dynamic> _callRouterUci(
@@ -1814,12 +1841,20 @@ class AppState extends ChangeNotifier {
       if (type != null && type != 'rule') return;
       if (!isAppRule) return;
 
+      final hostname = _blockedMetadataValue(
+        value[_blockedRuleHostnameOption]?.toString(),
+      );
+      final ipAddress = _blockedMetadataValue(
+        value[_blockedRuleIpOption]?.toString(),
+      );
       for (final mac in _macsFromFirewallValue(value['src_mac'])) {
         if (!_isBlockableMac(mac)) continue;
         rules.add(
           _BlockedClientRule(
             macAddress: _normalizeClientMac(mac),
             section: section,
+            ipAddress: ipAddress,
+            hostname: hostname,
             router: router,
           ),
         );
