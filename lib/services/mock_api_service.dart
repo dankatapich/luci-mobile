@@ -147,6 +147,24 @@ class MockApiService implements IApiService {
 
   @override
   Future<Map<String, Set<String>>> fetchAssociatedStations() async {
+    final details = await fetchAssociatedStationDetails();
+    final result = <String, Set<String>>{};
+    details.forEach((interface, stations) {
+      final macs = stations
+          .map((station) => station['mac']?.toString())
+          .where((mac) => mac != null && mac.isNotEmpty)
+          .cast<String>()
+          .toSet();
+      if (macs.isNotEmpty) {
+        result[interface] = macs;
+      }
+    });
+    return result;
+  }
+
+  @override
+  Future<Map<String, List<Map<String, dynamic>>>>
+      fetchAssociatedStationDetails() async {
     // Simulate a short delay for realism
     await Future.delayed(const Duration(milliseconds: 300));
 
@@ -155,39 +173,191 @@ class MockApiService implements IApiService {
         '${AppConfig.mockDataPath}associated_stations.json',
       );
       final jsonData = jsonDecode(jsonString);
-
-      final result = <String, Set<String>>{};
-      if (jsonData is Map<String, dynamic>) {
-        jsonData.forEach((interface, stations) {
-          if (stations is List) {
-            result[interface] = stations.map((s) => s.toString()).toSet();
-          }
-        });
-      }
-      return result;
+      final result = _parseAssociatedStationDetails(jsonData);
+      if (result.isNotEmpty) return result;
     } catch (e) {
-      // Log error and return comprehensive default mock data
-      // Make sure these MAC addresses match some of the DHCP lease MAC addresses
       debugPrint('MockApiService: Failed to load associated stations data: $e');
-      return {
-        'wlan0': {
-          'aa:bb:cc:11:22:33',
-          'aa:bb:cc:44:55:66',
-          'aa:bb:cc:77:88:99',
-          'bb:cc:dd:11:22:33',
-          'bb:cc:dd:44:55:66',
-          'bb:cc:dd:77:88:99',
-        },
-        'wlan1': {
-          'aa:bb:cc:aa:bb:cc',
-          'aa:bb:cc:dd:ee:ff',
-          'aa:bb:cc:12:34:56',
-          'bb:cc:dd:aa:bb:cc',
-          'bb:cc:dd:dd:ee:ff',
-          'aa:bb:cc:65:43:21',
-        },
-      };
     }
+
+    // Make sure these MAC addresses match some of the DHCP lease MAC addresses.
+    return _defaultAssociatedStationDetails();
+  }
+
+  Map<String, List<Map<String, dynamic>>> _parseAssociatedStationDetails(
+    dynamic jsonData,
+  ) {
+    final result = <String, List<Map<String, dynamic>>>{};
+    if (jsonData is! Map) return result;
+
+    final byInterface = _toStringKeyedMap(jsonData);
+    byInterface.forEach((interface, stations) {
+      final stationList = <Map<String, dynamic>>[];
+      _appendAssociatedStationDetails(stationList, stations);
+      if (stationList.isNotEmpty) {
+        result[interface] = stationList;
+      }
+    });
+    return result;
+  }
+
+  void _appendAssociatedStationDetails(
+    List<Map<String, dynamic>> stations,
+    dynamic value, {
+    String? macHint,
+  }) {
+    if (value == null) return;
+
+    if (value is String) {
+      if (value.isNotEmpty) {
+        stations.add({'mac': value, 'macaddr': value});
+      }
+      return;
+    }
+
+    if (value is List) {
+      for (final entry in value) {
+        _appendAssociatedStationDetails(stations, entry);
+      }
+      return;
+    }
+
+    if (value is Map) {
+      final map = _toStringKeyedMap(value);
+      final results = map['results'];
+      if (results != null) {
+        _appendAssociatedStationDetails(stations, results);
+        return;
+      }
+
+      final mac = _extractStationMac(map) ?? macHint;
+      if (mac != null && mac.isNotEmpty) {
+        final detail = Map<String, dynamic>.from(map);
+        detail['mac'] = mac;
+        detail['macaddr'] ??= mac;
+        stations.add(detail);
+        return;
+      }
+
+      for (final entry in map.entries) {
+        _appendAssociatedStationDetails(
+          stations,
+          entry.value,
+          macHint: _looksLikeMac(entry.key) ? entry.key : null,
+        );
+      }
+    }
+  }
+
+  String? _extractStationMac(Map<String, dynamic> station) {
+    for (final key in const ['mac', 'macaddr', 'address']) {
+      final value = station[key]?.toString();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  Map<String, dynamic> _toStringKeyedMap(Map<dynamic, dynamic> map) {
+    return map.map((key, value) => MapEntry(key.toString(), value));
+  }
+
+  bool _looksLikeMac(String value) {
+    final normalized = value.replaceAll('-', ':');
+    return RegExp(
+      r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$',
+    ).hasMatch(normalized);
+  }
+
+  Map<String, List<Map<String, dynamic>>> _defaultAssociatedStationDetails() {
+    return {
+      'wlan0': [
+        {
+          'mac': 'aa:bb:cc:11:22:33',
+          'signal': -45,
+          'noise': -95,
+          'rx_rate': 144400,
+          'tx_rate': 866700,
+        },
+        {
+          'mac': 'aa:bb:cc:44:55:66',
+          'signal': -51,
+          'noise': -94,
+          'rx_rate': 866700,
+          'tx_rate': 585000,
+        },
+        {
+          'mac': 'aa:bb:cc:77:88:99',
+          'signal': -62,
+          'noise': -96,
+          'rx_rate': 72000,
+          'tx_rate': 144400,
+        },
+        {
+          'mac': 'bb:cc:dd:11:22:33',
+          'signal': -48,
+          'noise': -93,
+          'rx_rate': 585000,
+          'tx_rate': 390000,
+        },
+        {
+          'mac': 'bb:cc:dd:44:55:66',
+          'signal': -58,
+          'noise': -95,
+          'rx_rate': 144400,
+          'tx_rate': 144400,
+        },
+        {
+          'mac': 'bb:cc:dd:77:88:99',
+          'signal': -67,
+          'noise': -96,
+          'rx_rate': 54000,
+          'tx_rate': 72000,
+        },
+      ],
+      'wlan1': [
+        {
+          'mac': 'aa:bb:cc:aa:bb:cc',
+          'signal': -43,
+          'noise': -98,
+          'rx_rate': 1200000,
+          'tx_rate': 866700,
+        },
+        {
+          'mac': 'aa:bb:cc:dd:ee:ff',
+          'signal': -56,
+          'noise': -97,
+          'rx_rate': 866700,
+          'tx_rate': 650000,
+        },
+        {
+          'mac': 'aa:bb:cc:12:34:56',
+          'signal': -50,
+          'noise': -96,
+          'rx_rate': 390000,
+          'tx_rate': 390000,
+        },
+        {
+          'mac': 'bb:cc:dd:aa:bb:cc',
+          'signal': -60,
+          'noise': -98,
+          'rx_rate': 195000,
+          'tx_rate': 292500,
+        },
+        {
+          'mac': 'bb:cc:dd:dd:ee:ff',
+          'signal': -64,
+          'noise': -97,
+          'rx_rate': 144400,
+          'tx_rate': 195000,
+        },
+        {
+          'mac': 'aa:bb:cc:65:43:21',
+          'signal': -53,
+          'noise': -95,
+          'rx_rate': 585000,
+          'tx_rate': 390000,
+        },
+      ],
+    };
   }
 
   @override
@@ -848,9 +1018,30 @@ class MockApiService implements IApiService {
     required String interface,
     BuildContext? context,
   }) async {
-    await Future.delayed(const Duration(milliseconds: 200));
-    // Return mock associated stations
-    return ['aa:bb:cc:dd:ee:01', 'aa:bb:cc:dd:ee:02', 'aa:bb:cc:dd:ee:03'];
+    final stations = await fetchAssociatedStationDetailsWithContext(
+      ipAddress: ipAddress,
+      sysauth: sysauth,
+      useHttps: useHttps,
+      interface: interface,
+      context: context,
+    );
+    return stations
+        .map((station) => station['mac']?.toString())
+        .where((mac) => mac != null && mac.isNotEmpty)
+        .cast<String>()
+        .toList();
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> fetchAssociatedStationDetailsWithContext({
+    required String ipAddress,
+    required String sysauth,
+    required bool useHttps,
+    required String interface,
+    BuildContext? context,
+  }) async {
+    final details = await fetchAssociatedStationDetails();
+    return details[interface] ?? const <Map<String, dynamic>>[];
   }
 
   @override
@@ -901,7 +1092,34 @@ class MockApiService implements IApiService {
     required bool useHttps,
     BuildContext? context,
   }) async {
-    // For mock service, just delegate to fetchAssociatedStations
-    return await fetchAssociatedStations();
+    final details = await fetchAllAssociatedStationDetailsWithContext(
+      ipAddress: ipAddress,
+      sysauth: sysauth,
+      useHttps: useHttps,
+      context: context,
+    );
+    final result = <String, Set<String>>{};
+    details.forEach((interface, stations) {
+      final macs = stations
+          .map((station) => station['mac']?.toString())
+          .where((mac) => mac != null && mac.isNotEmpty)
+          .cast<String>()
+          .toSet();
+      if (macs.isNotEmpty) {
+        result[interface] = macs;
+      }
+    });
+    return result;
+  }
+
+  @override
+  Future<Map<String, List<Map<String, dynamic>>>>
+      fetchAllAssociatedStationDetailsWithContext({
+    required String ipAddress,
+    required String sysauth,
+    required bool useHttps,
+    BuildContext? context,
+  }) async {
+    return await fetchAssociatedStationDetails();
   }
 }

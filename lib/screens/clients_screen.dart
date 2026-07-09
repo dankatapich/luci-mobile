@@ -570,37 +570,51 @@ class _UnifiedClientCardState extends State<_UnifiedClientCard>
             vertical: LuciSpacing.sm,
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title,
-                style: LuciTextStyles.detailLabel(context),
-                semanticsLabel: title,
+              Flexible(
+                flex: 4,
+                child: Text(
+                  title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: LuciTextStyles.detailLabel(context),
+                  semanticsLabel: title,
+                ),
               ),
-              Row(
-                children: [
-                  Text(
-                    value,
-                    style: valueColor != null
-                        ? LuciTextStyles.detailValue(
-                            context,
-                          ).copyWith(color: valueColor)
-                        : LuciTextStyles.detailValue(context),
-                    semanticsLabel: semanticsLabel ?? value,
-                  ),
-                  if (onTap != null)
-                    GestureDetector(
-                      onTap: onTap,
-                      child: const Padding(
-                        padding: EdgeInsets.only(left: 8.0),
-                        child: Icon(
-                          Icons.copy_all_outlined,
-                          size: 16,
-                          semanticLabel: 'Copy',
-                        ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 5,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        value,
+                        textAlign: TextAlign.end,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: valueColor != null
+                            ? LuciTextStyles.detailValue(
+                                context,
+                              ).copyWith(color: valueColor)
+                            : LuciTextStyles.detailValue(context),
+                        semanticsLabel: semanticsLabel ?? value,
                       ),
                     ),
-                ],
+                    if (onTap != null)
+                      GestureDetector(
+                        onTap: onTap,
+                        child: const Padding(
+                          padding: EdgeInsets.only(left: 8.0),
+                          child: Icon(
+                            Icons.copy_all_outlined,
+                            size: 16,
+                            semanticLabel: 'Copy',
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -652,6 +666,20 @@ class _UnifiedClientCardState extends State<_UnifiedClientCard>
               client.dnsName!,
               semanticsLabel: 'DNS Name: ${client.dnsName}',
             ),
+          if (client.connectionType == ConnectionType.wireless) ...[
+            const Divider(height: 1, indent: 16, endIndent: 16),
+            detailRow(
+              'Signal-to-Noise Ratio',
+              client.formattedSignalToNoiseRatio,
+              semanticsLabel:
+                  'Signal-to-Noise Ratio: ${client.formattedSignalToNoiseRatio}',
+            ),
+            detailRow(
+              'Current Link Speed',
+              client.formattedLinkSpeed,
+              semanticsLabel: 'Current Link Speed: ${client.formattedLinkSpeed}',
+            ),
+          ],
           const Divider(height: 1, indent: 16, endIndent: 16),
           const SizedBox(height: 8),
           detailRow(

@@ -1279,16 +1279,68 @@ class AppState extends ChangeNotifier {
         false;
   }
 
+  String _normalizeClientMac(String mac) {
+    return mac.toUpperCase().replaceAll('-', ':');
+  }
+
+  Map<String, Map<String, dynamic>> _indexStationDetailsByMac(
+    Map<String, List<Map<String, dynamic>>> stationsMap,
+  ) {
+    final indexed = <String, Map<String, dynamic>>{};
+    stationsMap.forEach((interface, stations) {
+      for (final station in stations) {
+        final rawMac = (station['mac'] ?? station['macaddr'])?.toString();
+        if (rawMac == null || rawMac.isEmpty) continue;
+
+        final mac = _normalizeClientMac(rawMac);
+        final detail = Map<String, dynamic>.from(station);
+        detail['mac'] = mac;
+        detail['macaddr'] = mac;
+        detail['interface'] ??= interface;
+        indexed[mac] = detail;
+      }
+    });
+    return indexed;
+  }
+
+  Set<String> _lowercaseMacsFromStationDetails(
+    Map<String, List<Map<String, dynamic>>> stationsMap,
+  ) {
+    return _indexStationDetailsByMac(
+      stationsMap,
+    ).keys.map((mac) => mac.toLowerCase()).toSet();
+  }
+
+  Map<String, dynamic> _leaseWithStationDetails(
+    Map<String, dynamic> lease,
+    Map<String, dynamic>? stationDetails,
+  ) {
+    if (stationDetails == null) return lease;
+
+    final merged = Map<String, dynamic>.from(lease);
+    merged.addAll(stationDetails);
+    merged['macaddr'] =
+        lease['macaddr'] ?? stationDetails['macaddr'] ?? stationDetails['mac'];
+    return merged;
+  }
+
+  bool _shouldReplaceClient(Client current, Client candidate) {
+    if (!current.hasWirelessMetrics && candidate.hasWirelessMetrics) {
+      return true;
+    }
+    if (current.hasWirelessMetrics && !candidate.hasWirelessMetrics) {
+      return false;
+    }
+    return candidate.hostname.isNotEmpty &&
+        candidate.hostname.length > current.hostname.length;
+  }
+
   /// Fetch all associated wireless MAC addresses from all wireless interfaces
   Future<Set<String>> fetchAllAssociatedWirelessMacs() async {
     if (_reviewerModeEnabled) {
       // Use the interface method for mock/reviewer mode
-      final stationsMap = await _apiService!.fetchAssociatedStations();
-      final macs = <String>{};
-      stationsMap.forEach((_, stations) {
-        macs.addAll(stations.map((m) => m.toLowerCase()));
-      });
-      return macs;
+      final stationsMap = await _apiService!.fetchAssociatedStationDetails();
+      return _lowercaseMacsFromStationDetails(stationsMap);
     } else {
       // Use the context-aware method for real API calls
       if (_routerService?.selectedRouter == null ||
@@ -1300,16 +1352,12 @@ class AppState extends ChangeNotifier {
       final useHttps = _routerService!.selectedRouter!.useHttps;
 
       final stationsMap = await _apiService!
-          .fetchAllAssociatedWirelessMacsWithContext(
+          .fetchAllAssociatedStationDetailsWithContext(
             ipAddress: ip,
             sysauth: _authService!.sysauth!,
             useHttps: useHttps,
           );
-      final macs = <String>{};
-      stationsMap.forEach((_, stations) {
-        macs.addAll(stations.map((m) => m.toLowerCase()));
-      });
-      return macs;
+      return _lowercaseMacsFromStationDetails(stationsMap);
     }
   }
 
@@ -1326,11 +1374,9 @@ class AppState extends ChangeNotifier {
   /// as wireless if their MAC appears in any router's associated stations list.
   Future<List<Client>> fetchAggregatedClients() async {
     try {
-      // Build a union of wireless MACs across all routers
-      final wirelessMacs = await fetchAllAssociatedWirelessMacsAggregated();
-      final normalizedWireless = wirelessMacs
-          .map((m) => m.toUpperCase().replaceAll('-', ':'))
-          .toSet();
+      // Build a union of wireless station details across all routers
+      final wirelessDetails = await fetchAssociatedStationDetailsAggregated();
+      final normalizedWireless = wirelessDetails.keys.toSet();
 
       // Aggregate leases across routers
       final leases = await fetchAggregatedDhcpLeases();
@@ -1338,18 +1384,20 @@ class AppState extends ChangeNotifier {
       // Convert to Client models with connection type
       final clients = <String, Client>{}; // key by normalized MAC
       for (final lease in leases) {
-        final client = Client.fromLease(lease);
-        final macNorm = client.macAddress.toUpperCase().replaceAll('-', ':');
+        final rawClient = Client.fromLease(lease);
+        final macNorm = _normalizeClientMac(rawClient.macAddress);
         final isWireless = normalizedWireless.contains(macNorm);
+        final stationDetails = wirelessDetails[macNorm];
+        final client = Client.fromLease(
+          _leaseWithStationDetails(lease, stationDetails),
+        );
         // If confirmed wireless by assoclist, mark wireless; otherwise keep heuristic
         final enriched = isWireless
             ? client.copyWith(connectionType: ConnectionType.wireless)
             : client;
         // Prefer entries that have more info (hostname length as heuristic)
-        if (!clients.containsKey(macNorm) ||
-            (enriched.hostname.isNotEmpty &&
-                enriched.hostname.length >
-                    (clients[macNorm]?.hostname.length ?? 0))) {
+        final existing = clients[macNorm];
+        if (existing == null || _shouldReplaceClient(existing, enriched)) {
           clients[macNorm] = enriched;
         }
       }
@@ -1357,7 +1405,10 @@ class AppState extends ChangeNotifier {
       // Add wireless stations not in DHCP leases (AP-mode fallback)
       for (final mac in normalizedWireless) {
         if (!clients.containsKey(mac)) {
-          clients[mac] = Client.fromWirelessStation(mac);
+          clients[mac] = Client.fromWirelessStation(
+            mac,
+            stationDetails: wirelessDetails[mac],
+          );
         }
       }
 
@@ -1391,11 +1442,8 @@ class AppState extends ChangeNotifier {
   Future<List<Client>> fetchClientsForSelectedRouter() async {
     try {
       if (_reviewerModeEnabled) {
-        final stationsMap = await _apiService!.fetchAssociatedStations();
-        final macs = <String>{};
-        stationsMap.forEach((_, stations) {
-          macs.addAll(stations.map((m) => m.toLowerCase()));
-        });
+        final stationsMap = await _apiService!.fetchAssociatedStationDetails();
+        final wirelessDetails = _indexStationDetailsByMac(stationsMap);
         final result = await _apiService!.callSimple(
           'luci-rpc',
           'getDHCPLeases',
@@ -1410,14 +1458,15 @@ class AppState extends ChangeNotifier {
           );
         }
         // Normalize wireless MACs for consistent lookup
-        final normalizedMacs = macs
-            .map((m) => m.toUpperCase().replaceAll('-', ':'))
-            .toSet();
+        final normalizedMacs = wirelessDetails.keys.toSet();
         final clientMap = <String, Client>{};
         for (final l in leases) {
-          final c = Client.fromLease(l);
-          final macNorm = c.macAddress.toUpperCase().replaceAll('-', ':');
+          final rawClient = Client.fromLease(l);
+          final macNorm = _normalizeClientMac(rawClient.macAddress);
           final isWireless = normalizedMacs.contains(macNorm);
+          final c = Client.fromLease(
+            _leaseWithStationDetails(l, wirelessDetails[macNorm]),
+          );
           clientMap[macNorm] = isWireless
               ? c.copyWith(connectionType: ConnectionType.wireless)
               : c;
@@ -1425,7 +1474,10 @@ class AppState extends ChangeNotifier {
         // Add wireless stations not in DHCP leases (AP-mode fallback)
         for (final mac in normalizedMacs) {
           if (!clientMap.containsKey(mac)) {
-            clientMap[mac] = Client.fromWirelessStation(mac);
+            clientMap[mac] = Client.fromWirelessStation(
+              mac,
+              stationDetails: wirelessDetails[mac],
+            );
           }
         }
         final reviewerClients = clientMap.values.toList();
@@ -1453,14 +1505,13 @@ class AppState extends ChangeNotifier {
       }
       final router = _routerService!.selectedRouter!;
 
-      // Get wireless MACs for this router
-      final stationsMap = await _apiService!.fetchAllAssociatedWirelessMacsWithContext(
+      // Get wireless station details for this router
+      final stationsMap = await _apiService!.fetchAllAssociatedStationDetailsWithContext(
         ipAddress: router.ipAddress,
         sysauth: _authService!.sysauth!,
         useHttps: router.useHttps,
       );
-      final wireless = <String>{};
-      stationsMap.forEach((_, s) => wireless.addAll(s.map((m) => m.toLowerCase())));
+      final wirelessDetails = _indexStationDetailsByMac(stationsMap);
 
       // Get DHCP leases for this router
       final callRes = await _apiService!.call(
@@ -1481,15 +1532,16 @@ class AppState extends ChangeNotifier {
       }
 
       // Normalize wireless MACs for consistent lookup
-      final normalizedWireless = wireless
-          .map((m) => m.toUpperCase().replaceAll('-', ':'))
-          .toSet();
+      final normalizedWireless = wirelessDetails.keys.toSet();
 
       final clientMap = <String, Client>{};
       for (final l in leases) {
-        final c = Client.fromLease(l);
-        final macNorm = c.macAddress.toUpperCase().replaceAll('-', ':');
+        final rawClient = Client.fromLease(l);
+        final macNorm = _normalizeClientMac(rawClient.macAddress);
         final isWireless = normalizedWireless.contains(macNorm);
+        final c = Client.fromLease(
+          _leaseWithStationDetails(l, wirelessDetails[macNorm]),
+        );
         clientMap[macNorm] = isWireless
             ? c.copyWith(connectionType: ConnectionType.wireless)
             : c;
@@ -1498,7 +1550,10 @@ class AppState extends ChangeNotifier {
       // Add wireless stations not in DHCP leases (AP-mode fallback)
       for (final mac in normalizedWireless) {
         if (!clientMap.containsKey(mac)) {
-          clientMap[mac] = Client.fromWirelessStation(mac);
+          clientMap[mac] = Client.fromWirelessStation(
+            mac,
+            stationDetails: wirelessDetails[mac],
+          );
         }
       }
 
@@ -1531,14 +1586,17 @@ class AppState extends ChangeNotifier {
 
   /// Returns a union set of associated wireless MAC addresses across all routers
   Future<Set<String>> fetchAllAssociatedWirelessMacsAggregated() async {
+    final stationDetails = await fetchAssociatedStationDetailsAggregated();
+    return stationDetails.keys.map((mac) => mac.toLowerCase()).toSet();
+  }
+
+  /// Returns associated wireless station details across all configured routers.
+  Future<Map<String, Map<String, dynamic>>>
+      fetchAssociatedStationDetailsAggregated() async {
     try {
       if (_reviewerModeEnabled) {
-        final stationsMap = await _apiService!.fetchAssociatedStations();
-        final macs = <String>{};
-        stationsMap.forEach((_, stations) {
-          macs.addAll(stations.map((m) => m.toLowerCase()));
-        });
-        return macs;
+        final stationsMap = await _apiService!.fetchAssociatedStationDetails();
+        return _indexStationDetailsByMac(stationsMap);
       }
 
       final routers = _routerService?.routers ?? const <model.Router>[];
@@ -1554,28 +1612,28 @@ class AppState extends ChangeNotifier {
               r.password,
               r.useHttps,
             );
-            if (res.token == null) return <String>{};
-            final map = await _apiService!.fetchAllAssociatedWirelessMacsWithContext(
+            if (res.token == null) return <String, Map<String, dynamic>>{};
+            final map =
+                await _apiService!.fetchAllAssociatedStationDetailsWithContext(
               ipAddress: r.ipAddress,
               sysauth: res.token!,
               useHttps: res.actualUseHttps,
             );
-            final set = <String>{};
-            map.forEach((_, stations) {
-              set.addAll(stations.map((m) => m.toLowerCase()));
-            });
-            return set;
+            return _indexStationDetailsByMac(map);
           }
         } catch (e) {
           // Skip router on failure
         }
-        return <String>{};
+        return <String, Map<String, dynamic>>{};
       }).toList();
 
       final results = await Future.wait(tasks);
-      return results.fold<Set<String>>(<String>{}, (acc, s) => acc..addAll(s));
+      return results.fold<Map<String, Map<String, dynamic>>>(
+        <String, Map<String, dynamic>>{},
+        (acc, details) => acc..addAll(details),
+      );
     } catch (e, stack) {
-      Logger.exception('Failed to aggregate wireless MACs', e, stack);
+      Logger.exception('Failed to aggregate wireless station details', e, stack);
       return {};
     }
   }

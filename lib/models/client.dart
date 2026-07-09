@@ -13,6 +13,10 @@ class Client {
   final int? expiresAt; // timestamp in seconds
   final ConnectionType connectionType;
   final List<String>? ipv6Addresses;
+  final int? signal; // dBm
+  final int? noise; // dBm
+  final int? rxRate; // kbit/s or bit/s, depending on iwinfo backend
+  final int? txRate; // kbit/s or bit/s, depending on iwinfo backend
 
   Client({
     required this.ipAddress,
@@ -27,12 +31,26 @@ class Client {
     this.expiresAt,
     this.connectionType = ConnectionType.unknown,
     this.ipv6Addresses,
+    this.signal,
+    this.noise,
+    this.rxRate,
+    this.txRate,
   });
 
   // Helper function to determine connection type from MAC address or other data
   static ConnectionType _determineConnectionType(Map<String, dynamic> lease) {
     // Check for wireless-specific fields first
-    if (lease['signal'] != null || lease['noise'] != null) {
+    if (lease['signal'] != null ||
+        lease['noise'] != null ||
+        lease['rx_rate'] != null ||
+        lease['tx_rate'] != null ||
+        lease['rxRate'] != null ||
+        lease['txRate'] != null ||
+        lease['rxrate'] != null ||
+        lease['txrate'] != null ||
+        lease['rx'] != null ||
+        lease['tx'] != null ||
+        lease['bitrate'] != null) {
       return ConnectionType.wireless;
     }
 
@@ -112,25 +130,39 @@ class Client {
     return ConnectionType.unknown;
   }
 
+  static String? _toStringValue(dynamic value) {
+    return value?.toString();
+  }
+
+  static int? _toIntValue(dynamic value) {
+    if (value == null) return null;
+    if (value is int) return value;
+    if (value is String) return int.tryParse(value);
+    if (value is double) return value.toInt();
+    if (value is num) return value.toInt();
+    if (value is Map) {
+      for (final key in const ['rate', 'value', 'mbps']) {
+        if (value[key] != null) {
+          return _toIntValue(value[key]);
+        }
+      }
+    }
+    return null;
+  }
+
+  static int? _firstIntValue(Map<String, dynamic> data, List<String> keys) {
+    for (final key in keys) {
+      final value = _toIntValue(data[key]);
+      if (value != null) return value;
+    }
+    return null;
+  }
+
   factory Client.fromLease(Map<String, dynamic> lease) {
-    // Helper function to safely convert dynamic to String
-    String? toStringValue(dynamic value) {
-      return value?.toString();
-    }
-
-    // Helper function to safely convert dynamic to int
-    int? toIntValue(dynamic value) {
-      if (value == null) return null;
-      if (value is int) return value;
-      if (value is String) return int.tryParse(value);
-      if (value is double) return value.toInt();
-      return null;
-    }
-
-    final expires = toIntValue(
+    final expires = _toIntValue(
       lease['expires'],
     ); // This is the remaining lease time in seconds
-    final activetime = toIntValue(lease['activetime']);
+    final activetime = _toIntValue(lease['activetime']);
 
     // 'expires' from the API is the time remaining on the lease in seconds.
     // We can use it directly. If it's not available, we can fall back to 'leasetime',
@@ -164,33 +196,107 @@ class Client {
     }
 
     return Client(
-      ipAddress: toStringValue(lease['ipaddr']) ?? 'N/A',
-      macAddress: toStringValue(lease['macaddr']) ?? 'N/A',
+      ipAddress: _toStringValue(lease['ipaddr']) ?? 'N/A',
+      macAddress: _toStringValue(lease['macaddr']) ?? 'N/A',
       hostname:
-          toStringValue(lease['hostname']) ??
-          toStringValue(lease['name']) ??
+          _toStringValue(lease['hostname']) ??
+          _toStringValue(lease['name']) ??
           'Unknown',
-      hostId: toStringValue(lease['hostid']),
+      hostId: _toStringValue(lease['hostid']),
       leaseTime: remainingLeaseTime, // Use the 'expires' value directly
-      vendor: toStringValue(lease['vendor']),
-      dnsName: toStringValue(lease['dnsname']),
-      clientId: toStringValue(lease['clientid']),
+      vendor: _toStringValue(lease['vendor']),
+      dnsName: _toStringValue(lease['dnsname']),
+      clientId: _toStringValue(lease['clientid']),
       activeTime: activetime,
       expiresAt: expiresAtTimestamp, // Store the calculated absolute timestamp
       connectionType: _determineConnectionType(lease),
       ipv6Addresses: ipv6Addresses,
+      signal: _toIntValue(lease['signal']),
+      noise: _toIntValue(lease['noise']),
+      rxRate: _firstIntValue(lease, const [
+        'rx_rate',
+        'rxRate',
+        'rxrate',
+        'rx',
+        'bitrate',
+      ]),
+      txRate: _firstIntValue(lease, const [
+        'tx_rate',
+        'txRate',
+        'txrate',
+        'tx',
+        'bitrate',
+      ]),
     );
   }
 
   /// Creates a Client from a wireless association MAC address (no DHCP data).
   /// Used as a fallback for AP-mode routers where DHCP is handled upstream.
-  factory Client.fromWirelessStation(String macAddress) {
+  factory Client.fromWirelessStation(
+    String macAddress, {
+    Map<String, dynamic>? stationDetails,
+  }) {
+    final details = stationDetails ?? const <String, dynamic>{};
     return Client(
       ipAddress: 'N/A',
       macAddress: macAddress,
       hostname: 'Unknown',
       connectionType: ConnectionType.wireless,
+      signal: _toIntValue(details['signal']),
+      noise: _toIntValue(details['noise']),
+      rxRate: _firstIntValue(details, const [
+        'rx_rate',
+        'rxRate',
+        'rxrate',
+        'rx',
+        'bitrate',
+      ]),
+      txRate: _firstIntValue(details, const [
+        'tx_rate',
+        'txRate',
+        'txrate',
+        'tx',
+        'bitrate',
+      ]),
     );
+  }
+
+  int? get signalToNoiseRatio {
+    if (signal == null || noise == null) return null;
+    return signal! - noise!;
+  }
+
+  bool get hasWirelessMetrics {
+    return signalToNoiseRatio != null || rxRate != null || txRate != null;
+  }
+
+  String get formattedSignalToNoiseRatio {
+    final snr = signalToNoiseRatio;
+    if (snr == null) return 'N/A';
+    return '$snr dB';
+  }
+
+  String get formattedLinkSpeed {
+    final rx = _formatLinkRate(rxRate);
+    final tx = _formatLinkRate(txRate);
+    if (rx != null && tx != null) {
+      if (rx == tx) return rx;
+      return 'Rx $rx / Tx $tx';
+    }
+    if (rx != null) return 'Rx $rx';
+    if (tx != null) return 'Tx $tx';
+    return 'N/A';
+  }
+
+  static String? _formatLinkRate(int? rate) {
+    if (rate == null || rate <= 0) return null;
+    final normalizedMbps = rate >= 10000000
+        ? rate / 1000000
+        : (rate >= 1000 ? rate / 1000 : rate.toDouble());
+    final fixedDigits = normalizedMbps == normalizedMbps.roundToDouble()
+        ? 0
+        : 1;
+    return '${normalizedMbps.toStringAsFixed(fixedDigits)} Mbps';
   }
 
   // Get formatted lease time (e.g., "2d 4h 30m")
@@ -244,6 +350,10 @@ class Client {
     int? expiresAt,
     ConnectionType? connectionType,
     List<String>? ipv6Addresses,
+    int? signal,
+    int? noise,
+    int? rxRate,
+    int? txRate,
   }) {
     return Client(
       ipAddress: ipAddress ?? this.ipAddress,
@@ -258,6 +368,10 @@ class Client {
       expiresAt: expiresAt ?? this.expiresAt,
       connectionType: connectionType ?? this.connectionType,
       ipv6Addresses: ipv6Addresses ?? this.ipv6Addresses,
+      signal: signal ?? this.signal,
+      noise: noise ?? this.noise,
+      rxRate: rxRate ?? this.rxRate,
+      txRate: txRate ?? this.txRate,
     );
   }
 }

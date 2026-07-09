@@ -1,30 +1,174 @@
 {
   "wlan0": [
-    "aa:bb:cc:11:22:33",
-    "aa:bb:cc:44:55:66",
-    "aa:bb:cc:77:88:99",
-    "aa:bb:cc:12:34:56",
-    "aa:bb:cc:98:76:54",
-    "bb:cc:dd:11:22:33",
-    "bb:cc:dd:77:88:99",
-    "bb:cc:dd:12:34:56",
-    "bb:cc:dd:65:43:21",
-    "cc:dd:ee:44:55:66",
-    "cc:dd:ee:65:43:21",
-    "cc:dd:ee:98:76:54"
+    {
+      "mac": "aa:bb:cc:11:22:33",
+      "signal": -45,
+      "noise": -95,
+      "rx_rate": 144400,
+      "tx_rate": 866700
+    },
+    {
+      "mac": "aa:bb:cc:44:55:66",
+      "signal": -51,
+      "noise": -94,
+      "rx_rate": 866700,
+      "tx_rate": 585000
+    },
+    {
+      "mac": "aa:bb:cc:77:88:99",
+      "signal": -62,
+      "noise": -96,
+      "rx_rate": 72000,
+      "tx_rate": 144400
+    },
+    {
+      "mac": "aa:bb:cc:12:34:56",
+      "signal": -50,
+      "noise": -96,
+      "rx_rate": 390000,
+      "tx_rate": 390000
+    },
+    {
+      "mac": "aa:bb:cc:98:76:54",
+      "signal": -68,
+      "noise": -95,
+      "rx_rate": 54000,
+      "tx_rate": 72000
+    },
+    {
+      "mac": "bb:cc:dd:11:22:33",
+      "signal": -48,
+      "noise": -93,
+      "rx_rate": 585000,
+      "tx_rate": 390000
+    },
+    {
+      "mac": "bb:cc:dd:77:88:99",
+      "signal": -67,
+      "noise": -96,
+      "rx_rate": 54000,
+      "tx_rate": 72000
+    },
+    {
+      "mac": "bb:cc:dd:12:34:56",
+      "signal": -61,
+      "noise": -95,
+      "rx_rate": 144400,
+      "tx_rate": 195000
+    },
+    {
+      "mac": "bb:cc:dd:65:43:21",
+      "signal": -59,
+      "noise": -94,
+      "rx_rate": 195000,
+      "tx_rate": 144400
+    },
+    {
+      "mac": "cc:dd:ee:44:55:66",
+      "signal": -64,
+      "noise": -96,
+      "rx_rate": 72000,
+      "tx_rate": 144400
+    },
+    {
+      "mac": "cc:dd:ee:65:43:21",
+      "signal": -54,
+      "noise": -97,
+      "rx_rate": 390000,
+      "tx_rate": 292500
+    },
+    {
+      "mac": "cc:dd:ee:98:76:54",
+      "signal": -70,
+      "noise": -96,
+      "rx_rate": 54000,
+      "tx_rate": 54000
+    }
   ],
   "wlan1": [
-    "aa:bb:cc:aa:bb:cc",
-    "aa:bb:cc:dd:ee:ff",
-    "aa:bb:cc:65:43:21",
-    "bb:cc:dd:44:55:66",
-    "bb:cc:dd:aa:bb:cc",
-    "bb:cc:dd:dd:ee:ff",
-    "bb:cc:dd:98:76:54",
-    "cc:dd:ee:11:22:33",
-    "cc:dd:ee:77:88:99",
-    "cc:dd:ee:aa:bb:cc",
-    "cc:dd:ee:dd:ee:ff",
-    "cc:dd:ee:12:34:56"
+    {
+      "mac": "aa:bb:cc:aa:bb:cc",
+      "signal": -43,
+      "noise": -98,
+      "rx_rate": 1200000,
+      "tx_rate": 866700
+    },
+    {
+      "mac": "aa:bb:cc:dd:ee:ff",
+      "signal": -56,
+      "noise": -97,
+      "rx_rate": 866700,
+      "tx_rate": 650000
+    },
+    {
+      "mac": "aa:bb:cc:65:43:21",
+      "signal": -53,
+      "noise": -95,
+      "rx_rate": 585000,
+      "tx_rate": 390000
+    },
+    {
+      "mac": "bb:cc:dd:44:55:66",
+      "signal": -58,
+      "noise": -95,
+      "rx_rate": 144400,
+      "tx_rate": 144400
+    },
+    {
+      "mac": "bb:cc:dd:aa:bb:cc",
+      "signal": -60,
+      "noise": -98,
+      "rx_rate": 195000,
+      "tx_rate": 292500
+    },
+    {
+      "mac": "bb:cc:dd:dd:ee:ff",
+      "signal": -64,
+      "noise": -97,
+      "rx_rate": 144400,
+      "tx_rate": 195000
+    },
+    {
+      "mac": "bb:cc:dd:98:76:54",
+      "signal": -72,
+      "noise": -96,
+      "rx_rate": 24000,
+      "tx_rate": 54000
+    },
+    {
+      "mac": "cc:dd:ee:11:22:33",
+      "signal": -55,
+      "noise": -98,
+      "rx_rate": 585000,
+      "tx_rate": 390000
+    },
+    {
+      "mac": "cc:dd:ee:77:88:99",
+      "signal": -49,
+      "noise": -97,
+      "rx_rate": 866700,
+      "tx_rate": 585000
+    },
+    {
+      "mac": "cc:dd:ee:aa:bb:cc",
+      "signal": -63,
+      "noise": -96,
+      "rx_rate": 144400,
+      "tx_rate": 195000
+    },
+    {
+      "mac": "cc:dd:ee:dd:ee:ff",
+      "signal": -57,
+      "noise": -97,
+      "rx_rate": 390000,
+      "tx_rate": 390000
+    },
+    {
+      "mac": "cc:dd:ee:12:34:56",
+      "signal": -52,
+      "noise": -96,
+      "rx_rate": 650000,
+      "tx_rate": 585000
+    }
   ]
 }

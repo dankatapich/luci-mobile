@@ -45,6 +45,7 @@ abstract class IApiService {
     BuildContext? context,
   });
   Future<Map<String, Set<String>>> fetchAssociatedStations();
+  Future<Map<String, List<Map<String, dynamic>>>> fetchAssociatedStationDetails();
   Future<List<String>> fetchAssociatedStationsWithContext({
     required String ipAddress,
     required String sysauth,
@@ -52,7 +53,21 @@ abstract class IApiService {
     required String interface,
     BuildContext? context,
   });
+  Future<List<Map<String, dynamic>>> fetchAssociatedStationDetailsWithContext({
+    required String ipAddress,
+    required String sysauth,
+    required bool useHttps,
+    required String interface,
+    BuildContext? context,
+  });
   Future<Map<String, Set<String>>> fetchAllAssociatedWirelessMacsWithContext({
+    required String ipAddress,
+    required String sysauth,
+    required bool useHttps,
+    BuildContext? context,
+  });
+  Future<Map<String, List<Map<String, dynamic>>>>
+      fetchAllAssociatedStationDetailsWithContext({
     required String ipAddress,
     required String sysauth,
     required bool useHttps,

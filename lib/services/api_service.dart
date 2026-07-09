@@ -393,9 +393,46 @@ class RealApiService implements IApiService {
     );
   }
 
+  @override
+  Future<Map<String, List<Map<String, dynamic>>>>
+      fetchAssociatedStationDetails() async {
+    throw UnimplementedError(
+      'Use fetchAllAssociatedStationDetailsWithContext for real implementation',
+    );
+  }
+
   /// Fetches all associated wireless MAC addresses from all wireless interfaces for real API
   @override
   Future<Map<String, Set<String>>> fetchAllAssociatedWirelessMacsWithContext({
+    required String ipAddress,
+    required String sysauth,
+    required bool useHttps,
+    BuildContext? context,
+  }) async {
+    final detailMap = await fetchAllAssociatedStationDetailsWithContext(
+      ipAddress: ipAddress,
+      sysauth: sysauth,
+      useHttps: useHttps,
+      context: context,
+    );
+    final result = <String, Set<String>>{};
+    detailMap.forEach((ifname, stations) {
+      final macs = stations
+          .map((station) => station['mac']?.toString())
+          .where((mac) => mac != null && mac.isNotEmpty)
+          .cast<String>()
+          .toSet();
+      if (macs.isNotEmpty) {
+        result[ifname] = macs;
+      }
+    });
+    return result;
+  }
+
+  /// Fetches detailed associated station data from all wireless interfaces.
+  @override
+  Future<Map<String, List<Map<String, dynamic>>>>
+      fetchAllAssociatedStationDetailsWithContext({
     required String ipAddress,
     required String sysauth,
     required bool useHttps,
@@ -418,7 +455,7 @@ class RealApiService implements IApiService {
         final wirelessData = wirelessResult[1] as Map<String, dynamic>?;
         if (wirelessData == null) return {};
 
-        final result = <String, Set<String>>{};
+        final result = <String, List<Map<String, dynamic>>>{};
 
         // For each wireless radio, get the associated stations
         for (final entry in wirelessData.entries) {
@@ -433,7 +470,7 @@ class RealApiService implements IApiService {
               final ifname = iface['ifname'] as String?;
               if (ifname != null) {
                 // Fetch associated stations for this interface
-                final stations = await fetchAssociatedStationsWithContext(
+                final stations = await fetchAssociatedStationDetailsWithContext(
                   ipAddress: ipAddress,
                   sysauth: sysauth,
                   useHttps: useHttps,
@@ -441,7 +478,7 @@ class RealApiService implements IApiService {
                   context: context?.mounted == true ? context : null,
                 );
                 if (stations.isNotEmpty) {
-                  result[ifname] = stations.toSet();
+                  result[ifname] = stations;
                 }
               }
             }
@@ -465,6 +502,29 @@ class RealApiService implements IApiService {
     required String interface,
     BuildContext? context,
   }) async {
+    final stations = await fetchAssociatedStationDetailsWithContext(
+      ipAddress: ipAddress,
+      sysauth: sysauth,
+      useHttps: useHttps,
+      interface: interface,
+      context: context,
+    );
+    return stations
+        .map((station) => station['mac']?.toString())
+        .where((mac) => mac != null && mac.isNotEmpty)
+        .cast<String>()
+        .toList();
+  }
+
+  /// Fetches detailed associated station data for a wireless interface.
+  @override
+  Future<List<Map<String, dynamic>>> fetchAssociatedStationDetailsWithContext({
+    required String ipAddress,
+    required String sysauth,
+    required bool useHttps,
+    required String interface,
+    BuildContext? context,
+  }) async {
     try {
       final result = await callWithContext(
         ipAddress,
@@ -477,23 +537,86 @@ class RealApiService implements IApiService {
       );
       // Handle LuCI RPC format: [status, data]
       if (result is List && result.length > 1 && result[0] == 0) {
-        final data = result[1];
-        if (data is Map && data['results'] is List) {
-          final resultsList = data['results'] as List;
-          return resultsList
-              .map(
-                (entry) => (entry as Map<String, dynamic>)['mac']?.toString(),
-              )
-              .where((mac) => mac != null)
-              .cast<String>()
-              .toList();
-        }
+        return _extractAssociatedStationDetails(result[1]);
       }
       return [];
     } catch (e, stack) {
       Logger.exception('Failed to fetch associated stations', e, stack);
       return [];
     }
+  }
+
+  List<Map<String, dynamic>> _extractAssociatedStationDetails(dynamic data) {
+    final stations = <Map<String, dynamic>>[];
+    _appendAssociatedStationDetails(stations, data);
+    return stations;
+  }
+
+  void _appendAssociatedStationDetails(
+    List<Map<String, dynamic>> stations,
+    dynamic value, {
+    String? macHint,
+  }) {
+    if (value == null) return;
+
+    if (value is String) {
+      if (value.isNotEmpty) {
+        stations.add({'mac': value, 'macaddr': value});
+      }
+      return;
+    }
+
+    if (value is List) {
+      for (final entry in value) {
+        _appendAssociatedStationDetails(stations, entry);
+      }
+      return;
+    }
+
+    if (value is Map) {
+      final map = _toStringKeyedMap(value);
+      final results = map['results'];
+      if (results != null) {
+        _appendAssociatedStationDetails(stations, results);
+        return;
+      }
+
+      final mac = _extractStationMac(map) ?? macHint;
+      if (mac != null && mac.isNotEmpty) {
+        final detail = Map<String, dynamic>.from(map);
+        detail['mac'] = mac;
+        detail['macaddr'] ??= mac;
+        stations.add(detail);
+        return;
+      }
+
+      for (final entry in map.entries) {
+        _appendAssociatedStationDetails(
+          stations,
+          entry.value,
+          macHint: _looksLikeMac(entry.key) ? entry.key : null,
+        );
+      }
+    }
+  }
+
+  String? _extractStationMac(Map<String, dynamic> station) {
+    for (final key in const ['mac', 'macaddr', 'address']) {
+      final value = station[key]?.toString();
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  Map<String, dynamic> _toStringKeyedMap(Map<dynamic, dynamic> map) {
+    return map.map((key, value) => MapEntry(key.toString(), value));
+  }
+
+  bool _looksLikeMac(String value) {
+    final normalized = value.replaceAll('-', ':');
+    return RegExp(
+      r'^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$',
+    ).hasMatch(normalized);
   }
 
   @override
