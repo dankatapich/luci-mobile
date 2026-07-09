@@ -39,7 +39,14 @@ class Client {
 
   // Helper function to determine connection type from MAC address or other data
   static ConnectionType _determineConnectionType(Map<String, dynamic> lease) {
-    // Check for wireless-specific fields first
+    // Check for wired-specific fields first. An explicit wired interface should
+    // not be overridden by weak wireless hints.
+    if (lease['port'] != null ||
+        lease['ifname']?.toString().startsWith('eth') == true) {
+      return ConnectionType.wired;
+    }
+
+    // Check for wireless-specific fields from associated station data.
     if (lease['signal'] != null ||
         lease['noise'] != null ||
         lease['rx_rate'] != null ||
@@ -51,23 +58,6 @@ class Client {
         lease['rx'] != null ||
         lease['tx'] != null ||
         lease['bitrate'] != null) {
-      return ConnectionType.wireless;
-    }
-
-    // Check for wired-specific fields
-    if (lease['port'] != null ||
-        lease['ifname']?.toString().startsWith('eth') == true) {
-      return ConnectionType.wired;
-    }
-
-    // Check hostname for common wireless indicators
-    final hostname = (lease['hostname'] ?? '').toString().toLowerCase();
-    if (hostname.contains('android') ||
-        hostname.contains('iphone') ||
-        hostname.contains('ipad') ||
-        hostname.contains('wireless') ||
-        hostname.contains('wifi') ||
-        hostname.contains('wl')) {
       return ConnectionType.wireless;
     }
 
@@ -280,7 +270,6 @@ class Client {
     final rx = _formatLinkRate(rxRate);
     final tx = _formatLinkRate(txRate);
     if (rx != null && tx != null) {
-      if (rx == tx) return rx;
       return 'Rx $rx / Tx $tx';
     }
     if (rx != null) return 'Rx $rx';

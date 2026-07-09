@@ -47,6 +47,18 @@ void main() {
       expect(client.formattedLinkSpeed, 'Rx 1200 Mbps / Tx 866.7 Mbps');
     });
 
+    test('always shows both directions when rx and tx match', () {
+      final client = Client.fromWirelessStation(
+        'AA:BB:CC:DD:EE:FF',
+        stationDetails: {
+          'rx_rate': 866700,
+          'tx_rate': 866700,
+        },
+      );
+
+      expect(client.formattedLinkSpeed, 'Rx 866.7 Mbps / Tx 866.7 Mbps');
+    });
+
     test('shows unavailable metrics as N/A', () {
       final client = Client.fromWirelessStation('AA:BB:CC:DD:EE:FF');
 

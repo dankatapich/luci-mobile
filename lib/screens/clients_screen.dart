@@ -666,7 +666,8 @@ class _UnifiedClientCardState extends State<_UnifiedClientCard>
               client.dnsName!,
               semanticsLabel: 'DNS Name: ${client.dnsName}',
             ),
-          if (client.connectionType == ConnectionType.wireless) ...[
+          if (client.connectionType == ConnectionType.wireless &&
+              client.hasWirelessMetrics) ...[
             const Divider(height: 1, indent: 16, endIndent: 16),
             detailRow(
               'Signal-to-Noise Ratio',

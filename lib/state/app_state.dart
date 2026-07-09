@@ -1386,16 +1386,22 @@ class AppState extends ChangeNotifier {
       for (final lease in leases) {
         final rawClient = Client.fromLease(lease);
         final macNorm = _normalizeClientMac(rawClient.macAddress);
-        final isWireless = normalizedWireless.contains(macNorm);
         final stationDetails = wirelessDetails[macNorm];
+        final isWireless =
+            rawClient.connectionType != ConnectionType.wired &&
+            normalizedWireless.contains(macNorm);
         final client = Client.fromLease(
-          _leaseWithStationDetails(lease, stationDetails),
+          _leaseWithStationDetails(
+            lease,
+            isWireless ? stationDetails : null,
+          ),
         );
-        // If confirmed wireless by assoclist, mark wireless; otherwise keep heuristic
+        // If confirmed wireless by assoclist, mark wireless; otherwise keep
+        // the lease's explicit wired/unknown classification.
         final enriched = isWireless
             ? client.copyWith(connectionType: ConnectionType.wireless)
             : client;
-        // Prefer entries that have more info (hostname length as heuristic)
+        // Prefer entries that have more info.
         final existing = clients[macNorm];
         if (existing == null || _shouldReplaceClient(existing, enriched)) {
           clients[macNorm] = enriched;
@@ -1463,9 +1469,14 @@ class AppState extends ChangeNotifier {
         for (final l in leases) {
           final rawClient = Client.fromLease(l);
           final macNorm = _normalizeClientMac(rawClient.macAddress);
-          final isWireless = normalizedMacs.contains(macNorm);
+          final isWireless =
+              rawClient.connectionType != ConnectionType.wired &&
+              normalizedMacs.contains(macNorm);
           final c = Client.fromLease(
-            _leaseWithStationDetails(l, wirelessDetails[macNorm]),
+            _leaseWithStationDetails(
+              l,
+              isWireless ? wirelessDetails[macNorm] : null,
+            ),
           );
           clientMap[macNorm] = isWireless
               ? c.copyWith(connectionType: ConnectionType.wireless)
@@ -1538,9 +1549,14 @@ class AppState extends ChangeNotifier {
       for (final l in leases) {
         final rawClient = Client.fromLease(l);
         final macNorm = _normalizeClientMac(rawClient.macAddress);
-        final isWireless = normalizedWireless.contains(macNorm);
+        final isWireless =
+            rawClient.connectionType != ConnectionType.wired &&
+            normalizedWireless.contains(macNorm);
         final c = Client.fromLease(
-          _leaseWithStationDetails(l, wirelessDetails[macNorm]),
+          _leaseWithStationDetails(
+            l,
+            isWireless ? wirelessDetails[macNorm] : null,
+          ),
         );
         clientMap[macNorm] = isWireless
             ? c.copyWith(connectionType: ConnectionType.wireless)

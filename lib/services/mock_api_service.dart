@@ -208,13 +208,25 @@ class MockApiService implements IApiService {
     if (value == null) return;
 
     if (value is String) {
-      if (value.isNotEmpty) {
+      if (_looksLikeMac(value)) {
         stations.add({'mac': value, 'macaddr': value});
       }
       return;
     }
 
     if (value is List) {
+      if (value.length == 2 &&
+          value.first is String &&
+          _looksLikeMac(value.first as String)) {
+        final mac = value.first as String;
+        final detail = value[1] is Map
+            ? Map<String, dynamic>.from(_toStringKeyedMap(value[1] as Map))
+            : <String, dynamic>{};
+        detail['mac'] = mac;
+        detail['macaddr'] ??= mac;
+        stations.add(detail);
+        return;
+      }
       for (final entry in value) {
         _appendAssociatedStationDetails(stations, entry);
       }
@@ -230,7 +242,7 @@ class MockApiService implements IApiService {
       }
 
       final mac = _extractStationMac(map) ?? macHint;
-      if (mac != null && mac.isNotEmpty) {
+      if (mac != null && _looksLikeMac(mac)) {
         final detail = Map<String, dynamic>.from(map);
         detail['mac'] = mac;
         detail['macaddr'] ??= mac;
@@ -239,10 +251,11 @@ class MockApiService implements IApiService {
       }
 
       for (final entry in map.entries) {
+        if (!_looksLikeMac(entry.key)) continue;
         _appendAssociatedStationDetails(
           stations,
           entry.value,
-          macHint: _looksLikeMac(entry.key) ? entry.key : null,
+          macHint: entry.key,
         );
       }
     }

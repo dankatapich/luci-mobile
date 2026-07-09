@@ -30,7 +30,7 @@ void main() {
       expect(classified.connectionType, ConnectionType.wireless);
     });
 
-    test('device NOT in assoclist should keep heuristic type, not forced wired', () {
+    test('device NOT in assoclist should not be marked wireless by hostname', () {
       // A phone that disconnected from WiFi — hostname says "iphone"
       final lease = {
         'macaddr': 'aa:bb:cc:11:22:33',
@@ -44,14 +44,26 @@ void main() {
       final isWireless = wirelessMacs.contains(macNorm);
 
       // OLD behavior: would force ConnectionType.wired (BUG)
-      // NEW behavior: keep the heuristic from _determineConnectionType
+      // NEW behavior: avoid claiming Wi-Fi without assoclist evidence
       final classified = client.copyWith(
         connectionType:
             isWireless ? ConnectionType.wireless : client.connectionType,
       );
 
-      // "iPhone" in hostname triggers wireless heuristic in _determineConnectionType
-      expect(classified.connectionType, ConnectionType.wireless);
+      expect(classified.connectionType, ConnectionType.unknown);
+    });
+
+    test('wired Android device should not be marked wireless by hostname', () {
+      final lease = {
+        'macaddr': '24:e4:ce:7c:50:56',
+        'ipaddr': '192.168.200.21',
+        'hostname': 'Android-TV-Panasonic',
+        'ifname': 'eth0',
+      };
+
+      final client = Client.fromLease(lease);
+
+      expect(client.connectionType, ConnectionType.wired);
     });
 
     test('device with no wireless indicators and not in assoclist should be unknown', () {
