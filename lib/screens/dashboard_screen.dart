@@ -5,7 +5,9 @@ import 'package:luci_mobile/state/app_state.dart';
 import 'package:luci_mobile/main.dart';
 import 'package:luci_mobile/widgets/luci_app_bar.dart';
 import 'package:luci_mobile/widgets/luci_animation_system.dart';
+import 'package:luci_mobile/widgets/switch_ports_card.dart';
 import 'package:luci_mobile/models/router.dart' as model;
+import 'package:luci_mobile/models/switch_port.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
@@ -698,6 +700,28 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
         ),
       ),
     );
+  }
+
+  List<SwitchPortGroup> _switchPortGroupsFromDashboard(AppState appState) {
+    final rawGroups = appState.dashboardData?['switchPorts'];
+    if (rawGroups is! List) return const [];
+
+    return rawGroups
+        .whereType<SwitchPortGroup>()
+        .where((group) => group.visiblePorts.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  List<Widget> _buildSwitchPortCards(AppState appState) {
+    final groups = _switchPortGroupsFromDashboard(appState);
+    if (groups.isEmpty) return const [];
+
+    return [
+      for (final group in groups) ...[
+        SwitchPortsCard(group: group),
+        const SizedBox(height: 12),
+      ],
+    ];
   }
 
   Widget _buildWirelessInfoCardContent(
@@ -1599,6 +1623,7 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               const SizedBox(height: 12),
               _buildSystemVitalsCard(appState),
               const SizedBox(height: 12),
+              ..._buildSwitchPortCards(appState),
               _buildWirelessNetworksCard(appState),
               const SizedBox(height: 12),
               _buildInterfaceStatusCards(appState),
@@ -1618,15 +1643,18 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
               ),
             );
           } else {
-            // Portrait mode: Fill available height exactly without scrolling
+            // Portrait mode: keep a minimum viewport height, but allow content
+            // to grow when optional cards such as port status are present.
             return LayoutBuilder(
               builder: (context, constraints) {
                 return RefreshIndicator(
                   onRefresh: () => appState.fetchDashboardData(),
                   child: SingleChildScrollView(
                     physics: const AlwaysScrollableScrollPhysics(),
-                    child: SizedBox(
-                      height: constraints.maxHeight,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxHeight,
+                      ),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16.0),
                         child: Column(
@@ -1635,12 +1663,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                             const SizedBox(height: 16),
                             _buildDeviceInfoCard(appState),
                             const SizedBox(height: 12),
-                            Expanded(
+                            SizedBox(
+                              height: 240,
                               child: _buildRealtimeThroughputCard(appState),
                             ),
                             const SizedBox(height: 12),
                             _buildSystemVitalsCard(appState),
                             const SizedBox(height: 12),
+                            ..._buildSwitchPortCards(appState),
                             _buildWirelessNetworksCard(appState),
                             const SizedBox(height: 12),
                             _buildInterfaceStatusCards(appState),
