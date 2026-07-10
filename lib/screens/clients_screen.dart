@@ -28,6 +28,7 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
   ClientsViewMode _clientsViewMode = ClientsViewMode.all;
   Future<List<Client>>? _clientsFuture;
   String? _lastSelectedRouterId;
+  String _lastNlbwmonSignature = '';
 
   @override
   void initState() {
@@ -48,8 +49,19 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
     final initState = ref.read(appStateProvider);
     _clientsViewMode = initState.clientsViewMode;
     _lastSelectedRouterId = initState.selectedRouter?.id;
+    _lastNlbwmonSignature = _nlbwmonClientSignature(initState);
     _computeClientsFuture();
+  }
 
+  String _nlbwmonClientSignature(AppState appState) {
+    final snapshot = appState.nlbwmonSnapshot;
+    if (snapshot == null) return 'unavailable';
+    return snapshot.hosts
+        .map(
+          (host) =>
+              '${host.macAddress ?? ''}|${host.ipAddress ?? ''}|${host.totalBytes}',
+        )
+        .join(';');
   }
 
   void _computeClientsFuture() {
@@ -90,6 +102,12 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
     final currentId = watchedAppState.selectedRouter?.id;
     if (currentId != _lastSelectedRouterId) {
       _lastSelectedRouterId = currentId;
+      _computeClientsFuture();
+      future = _clientsFuture;
+    }
+    final nlbwmonSignature = _nlbwmonClientSignature(watchedAppState);
+    if (nlbwmonSignature != _lastNlbwmonSignature) {
+      _lastNlbwmonSignature = nlbwmonSignature;
       _computeClientsFuture();
       future = _clientsFuture;
     }
