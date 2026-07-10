@@ -663,6 +663,12 @@ class AppState extends ChangeNotifier {
         params: {'config': 'network'},
       );
 
+      final builtinEthernetPortsFuture = callOptionalRpc(
+        object: 'luci',
+        method: 'getBuiltinEthernetPorts',
+        params: {},
+      );
+
       final results = await Future.wait([
         _apiService!.call(
           ip,
@@ -744,11 +750,13 @@ class AppState extends ChangeNotifier {
         uciWirelessFuture,
         boardJsonFuture,
         uciNetworkFuture,
+        builtinEthernetPortsFuture,
       ]);
       final wirelessRaw = optionalResults[0];
       final uciWirelessRaw = optionalResults[1];
       final boardJsonRaw = optionalResults[2];
       final uciNetworkRaw = optionalResults[3];
+      final builtinEthernetPortsRaw = optionalResults[4];
 
       Map<String, dynamic>? wirelessData;
       if (wirelessRaw != null) {
@@ -773,6 +781,14 @@ class AppState extends ChangeNotifier {
       dynamic uciNetworkConfig;
       if (uciNetworkRaw != null) {
         uciNetworkConfig = getOptionalData(uciNetworkRaw, 'uci.get network');
+      }
+
+      dynamic builtinEthernetPorts;
+      if (builtinEthernetPortsRaw != null) {
+        builtinEthernetPorts = getOptionalData(
+          builtinEthernetPortsRaw,
+          'luci.getBuiltinEthernetPorts',
+        );
       }
 
       final switchNames = extractSwitchNamesFromData(
@@ -817,12 +833,56 @@ class AppState extends ChangeNotifier {
         );
       }
 
-      final switchPortGroups = buildSwitchPortGroups(
+      final swconfigPortGroups = buildSwitchPortGroups(
         boardJson: boardJson,
         uciNetworkConfig: uciNetworkConfig,
         portStatesBySwitch: switchPortStates,
         featuresBySwitch: switchFeatures,
       );
+      final hasSwconfigPorts = swconfigPortGroups.any(
+        (group) => group.visiblePorts.isNotEmpty,
+      );
+
+      final directDeviceStatuses = <String, dynamic>{};
+      if (!hasSwconfigPorts) {
+        final directPortNames = extractDirectPortNamesFromData(
+          builtinPorts: builtinEthernetPorts,
+          boardJson: boardJson,
+        );
+        if (directPortNames.isNotEmpty) {
+          await Future.wait(
+            directPortNames.map((deviceName) async {
+              final statusRaw = await callOptionalRpc(
+                object: 'network.device',
+                method: 'status',
+                params: {'name': deviceName},
+              );
+              if (statusRaw != null) {
+                final statusData = getOptionalData(
+                  statusRaw,
+                  'network.device.status $deviceName',
+                );
+                if (statusData != null) {
+                  directDeviceStatuses[deviceName] = statusData;
+                }
+              }
+            }),
+          );
+        }
+      }
+
+      final directPortGroup = hasSwconfigPorts
+          ? null
+          : buildDirectPortGroup(
+              builtinPorts: builtinEthernetPorts,
+              boardJson: boardJson,
+              deviceStatuses: directDeviceStatuses,
+              networkDevices: networkData,
+            );
+      final switchPortGroups = <SwitchPortGroup>[
+        ...swconfigPortGroups,
+        if (directPortGroup != null) directPortGroup,
+      ];
 
       // Fetch WireGuard peer information for WireGuard interfaces
       final wireguardData = <String, dynamic>{};

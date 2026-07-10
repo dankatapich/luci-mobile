@@ -157,6 +157,52 @@ List<SwitchPortGroup> buildSwitchPortGroups({
   return groups;
 }
 
+SwitchPortGroup? buildDirectPortGroup({
+  required dynamic builtinPorts,
+  required dynamic boardJson,
+  required Map<String, dynamic> deviceStatuses,
+  dynamic networkDevices,
+}) {
+  final specs = _parseDirectPortSpecs(
+    builtinPorts: builtinPorts,
+    boardJson: boardJson,
+  );
+  if (specs.isEmpty) return null;
+
+  final ports = <SwitchPort>[];
+  for (var index = 0; index < specs.length; index++) {
+    final spec = specs[index];
+    final status = _directDeviceStatus(
+      spec.device,
+      deviceStatuses: deviceStatuses,
+      networkDevices: networkDevices,
+    );
+    final speed = _toInt(status['speed'] ?? status['link_speed']);
+    final duplex = _toDuplexBool(status['duplex']);
+    final parsedLink =
+        _toBoolOrNull(status['carrier'] ?? status['link'] ?? status['up']);
+
+    ports.add(
+      SwitchPort(
+        switchName: 'Ethernet',
+        number: index,
+        label: spec.label,
+        isCpu: false,
+        hasStatus: status.isNotEmpty,
+        link: parsedLink ?? false,
+        speed: speed,
+        duplex: duplex,
+        device: spec.device,
+      ),
+    );
+  }
+
+  return SwitchPortGroup(
+    switchName: 'Ethernet',
+    ports: ports,
+  );
+}
+
 Set<String> extractSwitchNamesFromData({
   required dynamic boardJson,
   required dynamic uciNetworkConfig,
@@ -177,6 +223,16 @@ Set<String> extractSwitchNamesFromData({
   });
 
   return names;
+}
+
+Set<String> extractDirectPortNamesFromData({
+  required dynamic builtinPorts,
+  required dynamic boardJson,
+}) {
+  return _parseDirectPortSpecs(
+    builtinPorts: builtinPorts,
+    boardJson: boardJson,
+  ).map((spec) => spec.device).toSet();
 }
 
 Map<String, List<_SwitchPortSpec>> _parseBoardTopologies(dynamic boardJson) {
@@ -241,6 +297,82 @@ Map<String, List<_SwitchPortSpec>> _parseBoardTopologies(dynamic boardJson) {
   });
 
   return topologies;
+}
+
+List<_DirectPortSpec> _parseDirectPortSpecs({
+  required dynamic builtinPorts,
+  required dynamic boardJson,
+}) {
+  final specsByDevice = <String, _DirectPortSpec>{};
+
+  for (final item in _directPortItems(builtinPorts)) {
+    final port = _asMap(item);
+    final device = _cleanString(port['device']);
+    if (device == null) continue;
+
+    final label = _cleanString(port['label']) ?? device;
+    specsByDevice[device] = _DirectPortSpec(device: device, label: label);
+  }
+
+  if (specsByDevice.isEmpty) {
+    final network = _asMap(_asMap(boardJson)['network']);
+    for (final role in ['lan', 'wan']) {
+      final section = _asMap(network[role]);
+      final ports = section['ports'];
+      if (ports is List) {
+        for (final port in ports) {
+          final device = _cleanString(port);
+          if (device != null) {
+            specsByDevice[device] = _DirectPortSpec(
+              device: device,
+              label: device,
+            );
+          }
+        }
+      } else {
+        final device = _cleanString(section['device']);
+        if (device != null) {
+          specsByDevice[device] = _DirectPortSpec(
+            device: device,
+            label: device,
+          );
+        }
+      }
+    }
+  }
+
+  final specs = specsByDevice.values.toList();
+  specs.sort((a, b) => a.device.compareTo(b.device));
+  return specs;
+}
+
+List<dynamic> _directPortItems(dynamic rawPorts) {
+  if (rawPorts is List) return rawPorts;
+  final ports = _asMap(rawPorts);
+  final result = ports['result'];
+  if (result is List) return result;
+  return const [];
+}
+
+Map<dynamic, dynamic> _directDeviceStatus(
+  String device, {
+  required Map<String, dynamic> deviceStatuses,
+  required dynamic networkDevices,
+}) {
+  final directStatus = _asMap(deviceStatuses[device]);
+  if (directStatus.isNotEmpty) return directStatus;
+
+  final deviceData = _asMap(_asMap(networkDevices)[device]);
+  if (deviceData.isEmpty) return const {};
+
+  final stats = _asMap(deviceData['stats']);
+  if (stats.isNotEmpty) {
+    return {
+      ...deviceData,
+      ...stats,
+    };
+  }
+  return deviceData;
 }
 
 Map<int, _SwitchPortState> _parsePortStates(dynamic rawStatus) {
@@ -343,6 +475,26 @@ bool? _toBoolOrNull(dynamic value) {
   return null;
 }
 
+bool? _toDuplexBool(dynamic value) {
+  if (value is bool) return value;
+  if (value is num) return value != 0;
+  if (value is String) {
+    switch (value.trim().toLowerCase()) {
+      case 'full':
+      case '1':
+      case 'true':
+      case 'yes':
+        return true;
+      case 'half':
+      case '0':
+      case 'false':
+      case 'no':
+        return false;
+    }
+  }
+  return null;
+}
+
 class _RawSwitchPortSpec {
   final int number;
   final String role;
@@ -370,6 +522,16 @@ class _SwitchPortSpec {
     required this.label,
     required this.isCpu,
     this.device,
+  });
+}
+
+class _DirectPortSpec {
+  final String device;
+  final String label;
+
+  const _DirectPortSpec({
+    required this.device,
+    required this.label,
   });
 }
 

@@ -788,6 +788,33 @@ class MockApiService implements IApiService {
           },
         ];
 
+      case 'luci.getBuiltinEthernetPorts':
+        return [
+          0,
+          {
+            'result': [
+              {'role': 'lan', 'device': 'lan1'},
+              {'role': 'lan', 'device': 'lan2'},
+              {'role': 'wan', 'device': 'wan'},
+            ],
+          },
+        ];
+
+      case 'network.device.status':
+        final name = params?['name']?.toString() ?? '';
+        final connected = name != 'wan';
+        return [
+          0,
+          {
+            'name': name,
+            'up': true,
+            'carrier': connected,
+            'speed': name == 'lan2' ? 100 : 1000,
+            'duplex': connected ? 'full' : null,
+            'stats': _getVariedNetworkStats(name),
+          },
+        ];
+
       case 'luci.wireguard.getWgInstances':
         // WireGuard instances data
         return [

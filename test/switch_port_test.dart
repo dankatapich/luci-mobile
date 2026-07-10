@@ -110,5 +110,52 @@ void main() {
 
       expect(names, {'switch0', 'switch1'});
     });
+
+    test('builds direct ethernet ports from builtin port status', () {
+      final group = buildDirectPortGroup(
+        builtinPorts: {
+          'result': [
+            {'role': 'lan', 'device': 'lan1'},
+            {'role': 'lan', 'device': 'lan2'},
+            {'role': 'wan', 'device': 'wan'},
+          ],
+        },
+        boardJson: {},
+        deviceStatuses: {
+          'lan1': {'carrier': true, 'speed': 1000, 'duplex': 'full'},
+          'lan2': {'carrier': true, 'speed': 100, 'duplex': 'full'},
+          'wan': {'carrier': false},
+        },
+      );
+
+      expect(group, isNotNull);
+      expect(group!.displayName, 'Ethernet');
+      expect(group.visiblePorts.map((port) => port.label), [
+        'lan1',
+        'lan2',
+        'wan',
+      ]);
+      expect(group.connectedPortCount, 2);
+      expect(group.visiblePorts.first.statusText, '1000baseT full-duplex');
+      expect(group.visiblePorts.last.statusText, 'No link');
+    });
+
+    test('falls back to board network ports for direct ethernet devices', () {
+      final names = extractDirectPortNamesFromData(
+        builtinPorts: {},
+        boardJson: {
+          'network': {
+            'lan': {
+              'ports': ['lan2', 'lan1'],
+            },
+            'wan': {
+              'device': 'wan',
+            },
+          },
+        },
+      );
+
+      expect(names, {'lan1', 'lan2', 'wan'});
+    });
   });
 }
