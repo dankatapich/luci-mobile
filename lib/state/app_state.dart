@@ -49,6 +49,16 @@ class _BlockedClientRule {
   });
 }
 
+class _NlbwmonClientHost {
+  final NlbwmonUsageEntry usage;
+  final model.Router? router;
+
+  _NlbwmonClientHost({
+    required this.usage,
+    this.router,
+  });
+}
+
 class AppState extends ChangeNotifier {
   static AppState? _instance;
 
@@ -1039,30 +1049,77 @@ class AppState extends ChangeNotifier {
     if (notify) notifyListeners();
 
     try {
+      final snapshot = await _fetchNlbwmonSnapshotForRouter(
+        router,
+        includePeriods: true,
+        logFailures: true,
+      );
+      if (snapshot == null) {
+        _nlbwmonSnapshot = null;
+        _isNlbwmonAvailable = false;
+        _nlbwmonError = 'Bandwidth monitor unavailable';
+      } else {
+        _nlbwmonSnapshot = snapshot;
+        _isNlbwmonAvailable = true;
+        _nlbwmonError = null;
+      }
+    } catch (e, stack) {
+      Logger.info('nlbwmon unavailable or failed: $e');
+      Logger.debug('nlbwmon stack: $stack');
+      _nlbwmonSnapshot = null;
+      _isNlbwmonAvailable = false;
+      _nlbwmonError = 'Bandwidth monitor unavailable';
+    } finally {
+      _isNlbwmonLoading = false;
+      if (notify) notifyListeners();
+    }
+  }
+
+  Future<NlbwmonSnapshot?> _fetchNlbwmonSnapshotForRouter(
+    model.Router router, {
+    bool includePeriods = false,
+    _RouterSession? session,
+    bool logFailures = false,
+  }) async {
+    if (_reviewerModeEnabled) {
+      return NlbwmonSnapshot.fromActionData(
+        _mockNlbwmonTrafficData(),
+        periods: includePeriods ? const ['2026-07-01'] : const [],
+      );
+    }
+
+    if (_apiService == null) return null;
+
+    try {
+      final activeSession = session ?? await _sessionForRouter(router);
+      if (activeSession == null) return null;
+
       List<String> periods = const [];
-      try {
-        final periodsData = await _apiService!.execDirect(
-          router.ipAddress,
-          _authService!.sysauth!,
-          router.useHttps,
-          command: '/usr/libexec/nlbwmon-action',
-          params: const ['periods'],
-          responseType: 'json',
-        );
-        if (periodsData is Map && periodsData['periods'] is List) {
-          periods = (periodsData['periods'] as List)
-              .map((period) => period.toString())
-              .toList(growable: false);
+      if (includePeriods) {
+        try {
+          final periodsData = await _apiService!.execDirect(
+            router.ipAddress,
+            activeSession.sysauth,
+            activeSession.useHttps,
+            command: '/usr/libexec/nlbwmon-action',
+            params: const ['periods'],
+            responseType: 'json',
+          );
+          if (periodsData is Map && periodsData['periods'] is List) {
+            periods = (periodsData['periods'] as List)
+                .map((period) => period.toString())
+                .toList(growable: false);
+          }
+        } catch (e, stack) {
+          Logger.debug('nlbwmon periods unavailable: $e');
+          Logger.debug('nlbwmon periods stack: $stack');
         }
-      } catch (e, stack) {
-        Logger.debug('nlbwmon periods unavailable: $e');
-        Logger.debug('nlbwmon periods stack: $stack');
       }
 
       final trafficData = await _apiService!.execDirect(
         router.ipAddress,
-        _authService!.sysauth!,
-        router.useHttps,
+        activeSession.sysauth,
+        activeSession.useHttps,
         command: '/usr/libexec/nlbwmon-action',
         params: const [
           'download',
@@ -1078,21 +1135,18 @@ class AppState extends ChangeNotifier {
         throw const FormatException('Malformed nlbwmon response');
       }
 
-      _nlbwmonSnapshot = NlbwmonSnapshot.fromActionData(
+      return NlbwmonSnapshot.fromActionData(
         Map<String, dynamic>.from(trafficData),
         periods: periods,
       );
-      _isNlbwmonAvailable = true;
-      _nlbwmonError = null;
     } catch (e, stack) {
-      Logger.info('nlbwmon unavailable or failed: $e');
+      if (logFailures) {
+        Logger.info('nlbwmon unavailable or failed: $e');
+      } else {
+        Logger.debug('nlbwmon client discovery unavailable: $e');
+      }
       Logger.debug('nlbwmon stack: $stack');
-      _nlbwmonSnapshot = null;
-      _isNlbwmonAvailable = false;
-      _nlbwmonError = 'Bandwidth monitor unavailable';
-    } finally {
-      _isNlbwmonLoading = false;
-      if (notify) notifyListeners();
+      return null;
     }
   }
 
@@ -1149,6 +1203,17 @@ class AppState extends ChangeNotifier {
           1100,
           5242880,
           900,
+        ],
+        [
+          4,
+          'AA:BB:CC:77:88:99',
+          '192.168.1.222',
+          'ssh',
+          22,
+          8388608,
+          720,
+          1048576,
+          140,
         ],
       ],
     };
@@ -2445,6 +2510,127 @@ class AppState extends ChangeNotifier {
     return leaseClient.connectionType;
   }
 
+  bool _isUsableNlbwmonClientMac(String mac) {
+    final id = _blockIdForMac(mac);
+    if (id.length != 12 ||
+        id == '000000000000' ||
+        id == 'ffffffffffff') {
+      return false;
+    }
+    final firstOctet = int.tryParse(id.substring(0, 2), radix: 16);
+    return firstOctet != null && (firstOctet & 1) == 0;
+  }
+
+  bool _routerAddressMatchesClientIp(String routerAddress, String clientIp) {
+    final normalized = routerAddress.contains('://')
+        ? routerAddress
+        : 'http://$routerAddress';
+    final host = Uri.tryParse(normalized)?.host ?? routerAddress;
+    return host == clientIp;
+  }
+
+  Future<List<_NlbwmonClientHost>> _fetchNlbwmonClientHostsForRouters(
+    List<model.Router> routers,
+  ) async {
+    if (_reviewerModeEnabled) {
+      final router =
+          routers.isNotEmpty ? routers.first : _routerService?.selectedRouter;
+      final snapshot = NlbwmonSnapshot.fromActionData(
+        _mockNlbwmonTrafficData(),
+      );
+      return snapshot.hosts
+          .map((usage) => _NlbwmonClientHost(usage: usage, router: router))
+          .toList(growable: false);
+    }
+
+    if (routers.isEmpty) return const [];
+
+    final selected = _routerService?.selectedRouter;
+    if (routers.length == 1 &&
+        selected?.id == routers.first.id &&
+        _nlbwmonSnapshot != null) {
+      return _nlbwmonSnapshot!.hosts
+          .map(
+            (usage) => _NlbwmonClientHost(
+              usage: usage,
+              router: routers.first,
+            ),
+          )
+          .toList(growable: false);
+    }
+
+    final tasks = routers.map((router) async {
+      final snapshot = await _fetchNlbwmonSnapshotForRouter(router);
+      if (snapshot == null) return const <_NlbwmonClientHost>[];
+      return snapshot.hosts
+          .map((usage) => _NlbwmonClientHost(usage: usage, router: router))
+          .toList(growable: false);
+    });
+
+    final results = await Future.wait(tasks);
+    return results.expand((hosts) => hosts).toList(growable: false);
+  }
+
+  void _mergeNlbwmonHostsIntoClients({
+    required Map<String, Client> clients,
+    required Iterable<_NlbwmonClientHost> nlbwmonHosts,
+    required Map<String, Map<String, dynamic>> wirelessDetails,
+    required Map<String, _BlockedClientRule> blockedRules,
+  }) {
+    for (final source in nlbwmonHosts) {
+      final rawMac = source.usage.macAddress;
+      final ipAddress = source.usage.ipAddress?.trim();
+      if (rawMac == null ||
+          ipAddress == null ||
+          ipAddress.isEmpty ||
+          !_isUsableNlbwmonClientMac(rawMac)) {
+        continue;
+      }
+
+      final mac = _normalizeClientMac(rawMac);
+      final stationDetails = wirelessDetails[mac];
+      final isWireless = stationDetails != null;
+      final blockedRule = blockedRules[mac];
+      final router = source.router;
+      if (router != null &&
+          _routerAddressMatchesClientIp(router.ipAddress, ipAddress)) {
+        continue;
+      }
+      final routerName = router == null ? null : _routerDisplayName(router);
+      final existing = clients[mac];
+
+      if (existing != null) {
+        final existingHasIp =
+            existing.ipAddress.trim().isNotEmpty && existing.ipAddress != 'N/A';
+        clients[mac] = existing.copyWith(
+          ipAddress: existingHasIp ? existing.ipAddress : ipAddress,
+          connectionType:
+              isWireless ? ConnectionType.wireless : existing.connectionType,
+          isBlocked: existing.isBlocked || blockedRule != null,
+          routerId: existing.routerId ?? router?.id,
+          routerName: existing.routerName ?? routerName,
+        );
+        continue;
+      }
+
+      final lease = <String, dynamic>{
+        'ipaddr': ipAddress,
+        'macaddr': mac,
+        'hostname': blockedRule?.hostname ?? 'Unknown',
+        if (router != null) 'routerId': router.id,
+        if (routerName != null) 'routerName': routerName,
+      };
+      final client = Client.fromLease(
+        _leaseWithStationDetails(lease, stationDetails),
+      );
+      clients[mac] = client.copyWith(
+        connectionType:
+            isWireless ? ConnectionType.wireless : ConnectionType.unknown,
+        isBlocked: blockedRule != null,
+      );
+    }
+  }
+
   bool _shouldReplaceClient(Client current, Client candidate) {
     if (!current.hasWirelessMetrics && candidate.hasWirelessMetrics) {
       return true;
@@ -2495,11 +2681,12 @@ class AppState extends ChangeNotifier {
   /// as wireless if their MAC appears in any router's associated stations list.
   Future<List<Client>> fetchAggregatedClients() async {
     try {
+      final routers = _routerService?.routers ?? const <model.Router>[];
       // Build a union of wireless station details across all routers
       final wirelessDetails = await fetchAssociatedStationDetailsAggregated();
       final normalizedWireless = wirelessDetails.keys.toSet();
       final blockedRules = await _fetchBlockedRuleMapForRouters(
-        _routerService?.routers ?? const <model.Router>[],
+        routers,
       );
 
       // Aggregate leases across routers
@@ -2544,6 +2731,14 @@ class AppState extends ChangeNotifier {
           );
         }
       }
+
+      final nlbwmonHosts = await _fetchNlbwmonClientHostsForRouters(routers);
+      _mergeNlbwmonHostsIntoClients(
+        clients: clients,
+        nlbwmonHosts: nlbwmonHosts,
+        wirelessDetails: wirelessDetails,
+        blockedRules: blockedRules,
+      );
 
       // Sort: wireless > wired > unknown, then by hostname
       final list = clients.values.toList();
@@ -2636,6 +2831,15 @@ class AppState extends ChangeNotifier {
             );
           }
         }
+        final nlbwmonHosts = await _fetchNlbwmonClientHostsForRouters(
+          selectedRouter == null ? const [] : [selectedRouter],
+        );
+        _mergeNlbwmonHostsIntoClients(
+          clients: clientMap,
+          nlbwmonHosts: nlbwmonHosts,
+          wirelessDetails: wirelessDetails,
+          blockedRules: blockedRules,
+        );
         final reviewerClients = clientMap.values.toList();
         reviewerClients.sort((a, b) {
           int typeOrder(ConnectionType t) {
@@ -2730,6 +2934,14 @@ class AppState extends ChangeNotifier {
           );
         }
       }
+
+      final nlbwmonHosts = await _fetchNlbwmonClientHostsForRouters([router]);
+      _mergeNlbwmonHostsIntoClients(
+        clients: clientMap,
+        nlbwmonHosts: nlbwmonHosts,
+        wirelessDetails: wirelessDetails,
+        blockedRules: blockedRules,
+      );
 
       final clients = clientMap.values.toList();
 

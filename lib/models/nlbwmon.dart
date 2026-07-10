@@ -43,12 +43,13 @@ class NlbwmonSnapshot {
       if (record.rxBytes <= 0 && record.txBytes <= 0) continue;
 
       final hostKey = record.hostKey;
-      hosts[hostKey] = (hosts[hostKey] ?? NlbwmonUsageEntry.host(record))
-          .merge(record);
+      hosts[hostKey] = (hosts[hostKey] ?? NlbwmonUsageEntry._host(record))
+          ._merge(record);
 
       final protocolKey = record.protocolKey;
       protocols[protocolKey] =
-          (protocols[protocolKey] ?? NlbwmonUsageEntry.protocol(record)).merge(
+          (protocols[protocolKey] ?? NlbwmonUsageEntry._protocol(record))
+              ._merge(
         record,
       );
     }
@@ -92,7 +93,7 @@ class NlbwmonUsageEntry {
     this.protocol,
   });
 
-  factory NlbwmonUsageEntry.host(_NlbwmonRecord record) {
+  factory NlbwmonUsageEntry._host(_NlbwmonRecord record) {
     return NlbwmonUsageEntry(
       key: record.hostKey,
       label: record.hostLabel,
@@ -106,7 +107,7 @@ class NlbwmonUsageEntry {
     );
   }
 
-  factory NlbwmonUsageEntry.protocol(_NlbwmonRecord record) {
+  factory NlbwmonUsageEntry._protocol(_NlbwmonRecord record) {
     return NlbwmonUsageEntry(
       key: record.protocolKey,
       label: record.protocolLabel,
@@ -121,12 +122,12 @@ class NlbwmonUsageEntry {
 
   int get totalBytes => rxBytes + txBytes;
 
-  NlbwmonUsageEntry merge(_NlbwmonRecord record) {
+  NlbwmonUsageEntry _merge(_NlbwmonRecord record) {
     return NlbwmonUsageEntry(
       key: key,
       label: label,
       macAddress: macAddress ?? record.normalizedMac,
-      ipAddress: ipAddress ?? record.ipAddress,
+      ipAddress: _preferredIpAddress(ipAddress, record.ipAddress),
       protocol: protocol,
       connections: connections + record.connections,
       rxBytes: rxBytes + record.rxBytes,
@@ -134,6 +135,13 @@ class NlbwmonUsageEntry {
       rxPackets: rxPackets + record.rxPackets,
       txPackets: txPackets + record.txPackets,
     );
+  }
+
+  static String? _preferredIpAddress(String? current, String? candidate) {
+    if (current == null || current.isEmpty) return candidate;
+    if (candidate == null || candidate.isEmpty) return current;
+    if (current.contains(':') && !candidate.contains(':')) return candidate;
+    return current;
   }
 }
 

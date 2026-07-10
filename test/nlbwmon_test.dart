@@ -19,17 +19,6 @@ void main() {
           ],
           'data': [
             [
-              4,
-              'aa:bb:cc:11:22:33',
-              '192.168.1.10',
-              'https',
-              10,
-              1000,
-              20,
-              500,
-              10,
-            ],
-            [
               6,
               'aa:bb:cc:11:22:33',
               'fd00::10',
@@ -39,6 +28,17 @@ void main() {
               5,
               50,
               2,
+            ],
+            [
+              4,
+              'aa:bb:cc:11:22:33',
+              '192.168.1.10',
+              'https',
+              10,
+              1000,
+              20,
+              500,
+              10,
             ],
             [
               4,
@@ -63,6 +63,7 @@ void main() {
       expect(snapshot.totalConnections, 15);
 
       expect(snapshot.hosts.first.macAddress, 'AA:BB:CC:11:22:33');
+      expect(snapshot.hosts.first.ipAddress, '192.168.1.10');
       expect(snapshot.hosts.first.rxBytes, 1200);
       expect(snapshot.hosts.first.txBytes, 550);
 
