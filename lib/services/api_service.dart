@@ -57,6 +57,12 @@ Uri _buildUrl(String ipAddress, bool useHttps, String path) {
   return Uri.parse('$scheme://$host$path');
 }
 
+String _escapeCgiExecArg(String value) {
+  return value
+      .replaceAll('\\', '\\\\')
+      .replaceAllMapped(RegExp(r'\s'), (match) => '\\${match.group(0)}');
+}
+
 class RealApiService implements IApiService {
   final HttpClientManager _httpClientManager = HttpClientManager();
 
@@ -843,5 +849,54 @@ class RealApiService implements IApiService {
       params: {'command': command},
       context: context,
     );
+  }
+
+  @override
+  Future<dynamic> execDirect(
+    String ipAddress,
+    String sysauth,
+    bool useHttps, {
+    required String command,
+    List<String>? params,
+    String responseType = 'text',
+    bool includeStderr = false,
+    BuildContext? context,
+  }) async {
+    final client = _createHttpClient(useHttps, ipAddress, context: context);
+    final uri = _buildUrl(ipAddress, useHttps, '/cgi-bin/cgi-exec');
+    final commandLine = [
+      _escapeCgiExecArg(command),
+      ...?params?.map(_escapeCgiExecArg),
+    ].join(' ');
+    final body =
+        'sessionid=${Uri.encodeComponent(sysauth)}'
+        '&command=${Uri.encodeComponent(commandLine)}'
+        '&stderr=${includeStderr ? 1 : 0}';
+
+    try {
+      final response = await client.post(
+        uri.toString(),
+        data: body,
+        options: Options(
+          contentType: Headers.formUrlEncodedContentType,
+          responseType: ResponseType.plain,
+          headers: {'Cookie': 'sysauth=$sysauth'},
+          validateStatus: (code) => code != null && code >= 200 && code < 500,
+        ),
+      );
+
+      if (response.statusCode != 200) {
+        throw Exception('CGI exec failed: HTTP ${response.statusCode}');
+      }
+
+      final data = response.data?.toString() ?? '';
+      if (responseType == 'json') {
+        return jsonDecode(data);
+      }
+      return data;
+    } on DioException catch (e, stack) {
+      Logger.exception('CGI exec failed', e, stack);
+      rethrow;
+    }
   }
 }

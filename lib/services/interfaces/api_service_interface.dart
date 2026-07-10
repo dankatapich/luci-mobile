@@ -96,4 +96,14 @@ abstract class IApiService {
     required String command,
     BuildContext? context,
   });
+  Future<dynamic> execDirect(
+    String ipAddress,
+    String sysauth,
+    bool useHttps, {
+    required String command,
+    List<String>? params,
+    String responseType = 'text',
+    bool includeStderr = false,
+    BuildContext? context,
+  });
 }

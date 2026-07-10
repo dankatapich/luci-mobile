@@ -1191,6 +1191,95 @@ class MockApiService implements IApiService {
   }
 
   @override
+  Future<dynamic> execDirect(
+    String ipAddress,
+    String sysauth,
+    bool useHttps, {
+    required String command,
+    List<String>? params,
+    String responseType = 'text',
+    bool includeStderr = false,
+    BuildContext? context,
+  }) async {
+    await Future.delayed(const Duration(milliseconds: 250));
+
+    if (command != '/usr/libexec/nlbwmon-action') {
+      throw Exception('Mock execDirect command not found: $command');
+    }
+
+    final args = params ?? const <String>[];
+    if (args.length == 1 && args.first == 'periods') {
+      return {
+        'periods': ['2026-07-01'],
+      };
+    }
+
+    if (args.isNotEmpty && args.first == 'download') {
+      return {
+        'columns': [
+          'family',
+          'mac',
+          'ip',
+          'layer7',
+          'conns',
+          'rx_bytes',
+          'rx_pkts',
+          'tx_bytes',
+          'tx_pkts',
+        ],
+        'data': [
+          [
+            4,
+            'AA:BB:CC:11:22:33',
+            '192.168.1.100',
+            'https',
+            318,
+            734003200,
+            48210,
+            94371840,
+            18520,
+          ],
+          [
+            4,
+            'AA:BB:CC:44:55:66',
+            '192.168.1.101',
+            'youtube',
+            91,
+            524288000,
+            38400,
+            41943040,
+            9100,
+          ],
+          [
+            6,
+            'AA:BB:CC:11:22:33',
+            'fd00::100',
+            'dns',
+            52,
+            10485760,
+            1100,
+            5242880,
+            900,
+          ],
+          [
+            4,
+            '00:00:00:00:00:00',
+            '192.168.1.250',
+            '',
+            14,
+            20971520,
+            1800,
+            1048576,
+            210,
+          ],
+        ],
+      };
+    }
+
+    throw Exception('Mock nlbwmon action not supported: ${args.join(' ')}');
+  }
+
+  @override
   Future<Map<String, Set<String>>> fetchAllAssociatedWirelessMacsWithContext({
     required String ipAddress,
     required String sysauth,

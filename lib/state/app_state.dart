@@ -11,6 +11,7 @@ import 'package:luci_mobile/services/throughput_service.dart';
 import 'package:luci_mobile/models/client.dart';
 import 'package:luci_mobile/models/router.dart' as model;
 import 'package:luci_mobile/models/dashboard_preferences.dart';
+import 'package:luci_mobile/models/nlbwmon.dart';
 import 'package:luci_mobile/models/switch_port.dart';
 import 'package:luci_mobile/services/interfaces/auth_service_interface.dart';
 import 'package:luci_mobile/services/interfaces/api_service_interface.dart';
@@ -68,6 +69,10 @@ class AppState extends ChangeNotifier {
   Map<String, dynamic>? _dashboardData;
   bool _isDashboardLoading = false;
   String? _dashboardError;
+  NlbwmonSnapshot? _nlbwmonSnapshot;
+  bool _isNlbwmonAvailable = false;
+  bool _isNlbwmonLoading = false;
+  String? _nlbwmonError;
 
   Timer? _throughputTimer;
   Timer? _pollingTimer;
@@ -301,6 +306,10 @@ class AppState extends ChangeNotifier {
   }
 
   Map<String, dynamic>? get dashboardData => _dashboardData;
+  NlbwmonSnapshot? get nlbwmonSnapshot => _nlbwmonSnapshot;
+  bool get isNlbwmonAvailable => _isNlbwmonAvailable;
+  bool get isNlbwmonLoading => _isNlbwmonLoading;
+  String? get nlbwmonError => _nlbwmonError;
   List<double> get rxHistory => _throughputService?.rxHistory ?? [];
   List<double> get txHistory => _throughputService?.txHistory ?? [];
   double get currentRxRate => _throughputService?.currentRxRate ?? 0.0;
@@ -356,6 +365,7 @@ class AppState extends ChangeNotifier {
       await selectRouter(_routerService!.routers.first.id);
     } else if (_routerService!.selectedRouter == null) {
       _dashboardData = null;
+      _clearNlbwmonData();
       notifyListeners();
     } else {
       notifyListeners();
@@ -370,6 +380,7 @@ class AppState extends ChangeNotifier {
 
     _isLoading = true;
     _dashboardError = null;
+    _clearNlbwmonData();
 
     // Clear throughput data when switching routers to prevent mixing data from different routers
     _cancelThroughputTimer();
@@ -479,6 +490,7 @@ class AppState extends ChangeNotifier {
     _authService?.logout().then((_) {});
     _dashboardData = null;
     _dashboardError = null;
+    _clearNlbwmonData();
     _cancelThroughputTimer();
     // Optionally, do not clear routers or selectedRouter
     notifyListeners();
@@ -555,6 +567,8 @@ class AppState extends ChangeNotifier {
           '_lastUpdated':
               DateTime.now().millisecondsSinceEpoch, // Force UI updates
         };
+
+        await _fetchNlbwmonData(notify: false);
 
         // Update throughput data with mock network data for reviewer mode
         if (_throughputService != null) {
@@ -922,14 +936,16 @@ class AppState extends ChangeNotifier {
       }
 
       // Update throughput data using the service
-        // Check if we should track specific interface
-        final prefs = _dashboardPreferences;
-        String? specificInterface;
-        if (!prefs.showAllThroughput &&
-            prefs.primaryThroughputInterface != null) {
-          // Map interface name to actual device name
-          specificInterface = _getDeviceNameForInterface(prefs.primaryThroughputInterface!);
-        }
+      // Check if we should track specific interface
+      final prefs = _dashboardPreferences;
+      String? specificInterface;
+      if (!prefs.showAllThroughput &&
+          prefs.primaryThroughputInterface != null) {
+        // Map interface name to actual device name
+        specificInterface = _getDeviceNameForInterface(
+          prefs.primaryThroughputInterface!,
+        );
+      }
 
       _throughputService?.updateThroughput(
         networkData,
@@ -951,6 +967,8 @@ class AppState extends ChangeNotifier {
         '_lastUpdated':
             DateTime.now().millisecondsSinceEpoch, // Force UI updates
       };
+
+      await _fetchNlbwmonData(notify: false);
 
       // Hybrid approach: update lastKnownHostname for the selected router
       final boardInfo = _dashboardData?['boardInfo'] as Map<String, dynamic>?;
@@ -977,10 +995,163 @@ class AppState extends ChangeNotifier {
       // print('Dashboard fetch error: $e\n$stack');
       // Clear dashboard data when there's an error so we don't show stale data
       _dashboardData = null;
+      _clearNlbwmonData();
     } finally {
       _isDashboardLoading = false;
       notifyListeners();
     }
+  }
+
+  Future<void> fetchNlbwmonData() async {
+    await _fetchNlbwmonData(notify: true);
+  }
+
+  Future<void> _fetchNlbwmonData({
+    bool notify = true,
+  }) async {
+    if (_reviewerModeEnabled) {
+      _isNlbwmonLoading = true;
+      _nlbwmonError = null;
+      if (notify) notifyListeners();
+
+      await Future.delayed(const Duration(milliseconds: 250));
+      _nlbwmonSnapshot = NlbwmonSnapshot.fromActionData(
+        _mockNlbwmonTrafficData(),
+        periods: const ['2026-07-01'],
+      );
+      _isNlbwmonAvailable = true;
+      _isNlbwmonLoading = false;
+      if (notify) notifyListeners();
+      return;
+    }
+
+    if (_routerService?.selectedRouter == null ||
+        _authService?.sysauth == null ||
+        _apiService == null) {
+      _clearNlbwmonData();
+      if (notify) notifyListeners();
+      return;
+    }
+
+    final router = _routerService!.selectedRouter!;
+    _isNlbwmonLoading = true;
+    _nlbwmonError = null;
+    if (notify) notifyListeners();
+
+    try {
+      List<String> periods = const [];
+      try {
+        final periodsData = await _apiService!.execDirect(
+          router.ipAddress,
+          _authService!.sysauth!,
+          router.useHttps,
+          command: '/usr/libexec/nlbwmon-action',
+          params: const ['periods'],
+          responseType: 'json',
+        );
+        if (periodsData is Map && periodsData['periods'] is List) {
+          periods = (periodsData['periods'] as List)
+              .map((period) => period.toString())
+              .toList(growable: false);
+        }
+      } catch (e, stack) {
+        Logger.debug('nlbwmon periods unavailable: $e');
+        Logger.debug('nlbwmon periods stack: $stack');
+      }
+
+      final trafficData = await _apiService!.execDirect(
+        router.ipAddress,
+        _authService!.sysauth!,
+        router.useHttps,
+        command: '/usr/libexec/nlbwmon-action',
+        params: const [
+          'download',
+          '-g',
+          'family,mac,ip,layer7',
+          '-o',
+          '-rx_bytes,-tx_bytes',
+        ],
+        responseType: 'json',
+      );
+
+      if (trafficData is! Map) {
+        throw const FormatException('Malformed nlbwmon response');
+      }
+
+      _nlbwmonSnapshot = NlbwmonSnapshot.fromActionData(
+        Map<String, dynamic>.from(trafficData),
+        periods: periods,
+      );
+      _isNlbwmonAvailable = true;
+      _nlbwmonError = null;
+    } catch (e, stack) {
+      Logger.info('nlbwmon unavailable or failed: $e');
+      Logger.debug('nlbwmon stack: $stack');
+      _nlbwmonSnapshot = null;
+      _isNlbwmonAvailable = false;
+      _nlbwmonError = 'Bandwidth monitor unavailable';
+    } finally {
+      _isNlbwmonLoading = false;
+      if (notify) notifyListeners();
+    }
+  }
+
+  void _clearNlbwmonData() {
+    _nlbwmonSnapshot = null;
+    _isNlbwmonAvailable = false;
+    _isNlbwmonLoading = false;
+    _nlbwmonError = null;
+  }
+
+  Map<String, dynamic> _mockNlbwmonTrafficData() {
+    return {
+      'columns': [
+        'family',
+        'mac',
+        'ip',
+        'layer7',
+        'conns',
+        'rx_bytes',
+        'rx_pkts',
+        'tx_bytes',
+        'tx_pkts',
+      ],
+      'data': [
+        [
+          4,
+          'AA:BB:CC:11:22:33',
+          '192.168.1.100',
+          'https',
+          318,
+          734003200,
+          48210,
+          94371840,
+          18520,
+        ],
+        [
+          4,
+          'AA:BB:CC:44:55:66',
+          '192.168.1.101',
+          'youtube',
+          91,
+          524288000,
+          38400,
+          41943040,
+          9100,
+        ],
+        [
+          6,
+          'AA:BB:CC:11:22:33',
+          'fd00::100',
+          'dns',
+          52,
+          10485760,
+          1100,
+          5242880,
+          900,
+        ],
+      ],
+    };
   }
 
   Map<String, dynamic> _processDhcpLeases(Map<String, dynamic> rawDhcpData) {
