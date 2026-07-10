@@ -59,7 +59,7 @@ class _ClientsScreenState extends ConsumerState<ClientsScreen>
     return snapshot.hosts
         .map(
           (host) =>
-              '${host.macAddress ?? ''}|${host.ipAddress ?? ''}|${host.totalBytes}',
+              '${host.macAddress ?? ''}|${host.ipAddress ?? ''}',
         )
         .join(';');
   }

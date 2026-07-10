@@ -2529,20 +2529,6 @@ class AppState extends ChangeNotifier {
     return host == clientIp;
   }
 
-  String? _clientKeyForIp(
-    Map<String, Client> clients,
-    String ipAddress,
-    model.Router? router,
-  ) {
-    for (final entry in clients.entries) {
-      final sameRouter = router == null ||
-          entry.value.routerId == null ||
-          entry.value.routerId == router.id;
-      if (sameRouter && entry.value.ipAddress == ipAddress) return entry.key;
-    }
-    return null;
-  }
-
   Future<List<_NlbwmonClientHost>> _fetchNlbwmonClientHostsForRouters(
     List<model.Router> routers,
   ) async {
@@ -2598,7 +2584,10 @@ class AppState extends ChangeNotifier {
     for (final source in nlbwmonHosts) {
       final rawMac = source.usage.macAddress;
       final ipAddress = source.usage.ipAddress?.trim();
-      if (ipAddress == null || ipAddress.isEmpty) {
+      if (rawMac == null ||
+          !_isUsableNlbwmonClientMac(rawMac) ||
+          ipAddress == null ||
+          ipAddress.isEmpty) {
         skipped++;
         continue;
       }
@@ -2610,22 +2599,17 @@ class AppState extends ChangeNotifier {
         continue;
       }
 
-      final mac = rawMac != null && _isUsableNlbwmonClientMac(rawMac)
-          ? _normalizeClientMac(rawMac)
-          : null;
-      final clientKey = mac ?? _clientKeyForIp(clients, ipAddress, router);
-      final routerKey = router?.id ?? 'unknown';
-      final storageKey = clientKey ?? 'ip:$routerKey:$ipAddress';
-      final stationDetails = mac == null ? null : wirelessDetails[mac];
+      final mac = _normalizeClientMac(rawMac);
+      final stationDetails = wirelessDetails[mac];
       final isWireless = stationDetails != null;
-      final blockedRule = mac == null ? null : blockedRules[mac];
+      final blockedRule = blockedRules[mac];
       final routerName = router == null ? null : _routerDisplayName(router);
-      final existing = clients[storageKey];
+      final existing = clients[mac];
 
       if (existing != null) {
         final existingHasIp =
             existing.ipAddress.trim().isNotEmpty && existing.ipAddress != 'N/A';
-        clients[storageKey] = existing.copyWith(
+        clients[mac] = existing.copyWith(
           ipAddress: existingHasIp ? existing.ipAddress : ipAddress,
           connectionType:
               isWireless ? ConnectionType.wireless : existing.connectionType,
@@ -2639,7 +2623,7 @@ class AppState extends ChangeNotifier {
 
       final lease = <String, dynamic>{
         'ipaddr': ipAddress,
-        'macaddr': mac ?? 'N/A',
+        'macaddr': mac,
         'hostname': blockedRule?.hostname ?? 'Unknown',
         if (router != null) 'routerId': router.id,
         if (routerName != null) 'routerName': routerName,
@@ -2647,7 +2631,7 @@ class AppState extends ChangeNotifier {
       final client = Client.fromLease(
         _leaseWithStationDetails(lease, stationDetails),
       );
-      clients[storageKey] = client.copyWith(
+      clients[mac] = client.copyWith(
         connectionType:
             isWireless ? ConnectionType.wireless : ConnectionType.unknown,
         isBlocked: blockedRule != null,
