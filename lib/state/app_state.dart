@@ -11,6 +11,7 @@ import 'package:luci_mobile/services/throughput_service.dart';
 import 'package:luci_mobile/models/client.dart';
 import 'package:luci_mobile/models/router.dart' as model;
 import 'package:luci_mobile/models/dashboard_preferences.dart';
+import 'package:luci_mobile/models/switch_port.dart';
 import 'package:luci_mobile/services/interfaces/auth_service_interface.dart';
 import 'package:luci_mobile/services/interfaces/api_service_interface.dart';
 import 'package:luci_mobile/services/api_service.dart';
@@ -519,6 +520,38 @@ class AppState extends ChangeNotifier {
           'uciWirelessConfig': results[6][1],
           'wan': _extractWanData(interfaceDump),
           'wireguard': <String, dynamic>{}, // Empty for reviewer mode
+          'switchPorts': buildSwitchPortGroups(
+            boardJson: {
+              'switch': {
+                'switch0': {
+                  'ports': [
+                    {'num': 5, 'device': 'eth0'},
+                    {'num': 0, 'role': 'lan', 'index': 1},
+                    {'num': 1, 'role': 'lan', 'index': 2},
+                    {'num': 2, 'role': 'lan', 'index': 3},
+                    {'num': 3, 'role': 'lan', 'index': 4},
+                    {'num': 4, 'role': 'wan'},
+                  ],
+                },
+              },
+            },
+            uciNetworkConfig: const {},
+            portStatesBySwitch: {
+              'switch0': {
+                'result': [
+                  {'port': 5, 'link': true, 'speed': 1000, 'duplex': true},
+                  {'port': 0, 'link': true, 'speed': 1000, 'duplex': true},
+                  {'port': 1, 'link': true, 'speed': 100, 'duplex': true},
+                  {'port': 2, 'link': false},
+                  {'port': 3, 'link': false},
+                  {'port': 4, 'link': false},
+                ],
+              },
+            },
+            featuresBySwitch: {
+              'switch0': {'switch_title': 'mock-switch'},
+            },
+          ),
           '_lastUpdated':
               DateTime.now().millisecondsSinceEpoch, // Force UI updates
         };
@@ -532,14 +565,16 @@ class AppState extends ChangeNotifier {
             'br-lan',
           }; // Mock all devices
 
-        // Check if we should track specific interface
-        final prefs = _dashboardPreferences;
-        String? specificInterface;
-        if (!prefs.showAllThroughput &&
-            prefs.primaryThroughputInterface != null) {
-          // Map interface name to actual device name
-          specificInterface = _getDeviceNameForInterface(prefs.primaryThroughputInterface!);
-        }
+          // Check if we should track specific interface
+          final prefs = _dashboardPreferences;
+          String? specificInterface;
+          if (!prefs.showAllThroughput &&
+              prefs.primaryThroughputInterface != null) {
+            // Map interface name to actual device name
+            specificInterface = _getDeviceNameForInterface(
+              prefs.primaryThroughputInterface!,
+            );
+          }
 
           _throughputService!.updateThroughput(
             networkData,
@@ -614,6 +649,18 @@ class AppState extends ChangeNotifier {
         object: 'uci',
         method: 'get',
         params: {'config': 'wireless'},
+      );
+
+      final boardJsonFuture = callOptionalRpc(
+        object: 'luci-rpc',
+        method: 'getBoardJSON',
+        params: {},
+      );
+
+      final uciNetworkFuture = callOptionalRpc(
+        object: 'uci',
+        method: 'get',
+        params: {'config': 'network'},
       );
 
       final results = await Future.wait([
@@ -692,10 +739,16 @@ class AppState extends ChangeNotifier {
       final dhcpLeases = getData(results[4]) as Map<String, dynamic>?;
 
       // Await optional wireless futures in parallel (won't throw — wired-only routers are fine)
-      final optionalResults =
-          await Future.wait([wirelessFuture, uciWirelessFuture]);
+      final optionalResults = await Future.wait([
+        wirelessFuture,
+        uciWirelessFuture,
+        boardJsonFuture,
+        uciNetworkFuture,
+      ]);
       final wirelessRaw = optionalResults[0];
       final uciWirelessRaw = optionalResults[1];
+      final boardJsonRaw = optionalResults[2];
+      final uciNetworkRaw = optionalResults[3];
 
       Map<String, dynamic>? wirelessData;
       if (wirelessRaw != null) {
@@ -711,6 +764,65 @@ class AppState extends ChangeNotifier {
         uciWirelessConfig =
             getOptionalData(uciWirelessRaw, 'uci.get wireless');
       }
+
+      dynamic boardJson;
+      if (boardJsonRaw != null) {
+        boardJson = getOptionalData(boardJsonRaw, 'luci-rpc.getBoardJSON');
+      }
+
+      dynamic uciNetworkConfig;
+      if (uciNetworkRaw != null) {
+        uciNetworkConfig = getOptionalData(uciNetworkRaw, 'uci.get network');
+      }
+
+      final switchNames = extractSwitchNamesFromData(
+        boardJson: boardJson,
+        uciNetworkConfig: uciNetworkConfig,
+      );
+      final switchPortStates = <String, dynamic>{};
+      final switchFeatures = <String, dynamic>{};
+      if (switchNames.isNotEmpty) {
+        await Future.wait(
+          switchNames.map((switchName) async {
+            final featureRaw = await callOptionalRpc(
+              object: 'luci',
+              method: 'getSwconfigFeatures',
+              params: {'switch': switchName},
+            );
+            if (featureRaw != null) {
+              final featureData = getOptionalData(
+                featureRaw,
+                'luci.getSwconfigFeatures $switchName',
+              );
+              if (featureData != null) {
+                switchFeatures[switchName] = featureData;
+              }
+            }
+
+            final stateRaw = await callOptionalRpc(
+              object: 'luci',
+              method: 'getSwconfigPortState',
+              params: {'switch': switchName},
+            );
+            if (stateRaw != null) {
+              final stateData = getOptionalData(
+                stateRaw,
+                'luci.getSwconfigPortState $switchName',
+              );
+              if (stateData != null) {
+                switchPortStates[switchName] = stateData;
+              }
+            }
+          }),
+        );
+      }
+
+      final switchPortGroups = buildSwitchPortGroups(
+        boardJson: boardJson,
+        uciNetworkConfig: uciNetworkConfig,
+        portStatesBySwitch: switchPortStates,
+        featuresBySwitch: switchFeatures,
+      );
 
       // Fetch WireGuard peer information for WireGuard interfaces
       final wireguardData = <String, dynamic>{};
@@ -803,6 +915,7 @@ class AppState extends ChangeNotifier {
         'wan': _extractWanData(interfaceDump),
         'uciWirelessConfig': uciWirelessConfig,
         'wireguard': wireguardData,
+        'switchPorts': switchPortGroups,
         '_lastUpdated':
             DateTime.now().millisecondsSinceEpoch, // Force UI updates
       };

@@ -48,7 +48,7 @@ class MockApiService implements IApiService {
 
     try {
       // Return appropriate mock data based on object and method
-      final mockDataFile = _getMockDataFile(object, method);
+      final mockDataFile = _getMockDataFile(object, method, params);
 
       if (mockDataFile != null) {
         try {
@@ -62,12 +62,12 @@ class MockApiService implements IApiService {
           debugPrint(
             'MockApiService: Failed to load mock data file "$mockDataFile" for endpoint "$endpointKey": $e',
           );
-          return _getDefaultMockData(object, method);
+          return _getDefaultMockData(object, method, params);
         }
       }
 
       // No mock file mapped, use default data
-      final defaultData = _getDefaultMockData(object, method);
+      final defaultData = _getDefaultMockData(object, method, params);
       if (defaultData[1] is Map && (defaultData[1] as Map).isEmpty) {
         debugPrint(
           'MockApiService: No mock data available for endpoint "$endpointKey", returning empty response',
@@ -97,7 +97,7 @@ class MockApiService implements IApiService {
 
     try {
       // Return appropriate mock data based on object and method
-      final mockDataFile = _getMockDataFile(object, method);
+      final mockDataFile = _getMockDataFile(object, method, params);
 
       if (mockDataFile != null) {
         try {
@@ -111,12 +111,12 @@ class MockApiService implements IApiService {
           debugPrint(
             'MockApiService: Failed to load mock data file "$mockDataFile" for endpoint "$endpointKey": $e',
           );
-          return _getDefaultMockData(object, method);
+          return _getDefaultMockData(object, method, params);
         }
       }
 
       // No mock file mapped, use default data
-      final defaultData = _getDefaultMockData(object, method);
+      final defaultData = _getDefaultMockData(object, method, params);
       if (defaultData[1] is Map && (defaultData[1] as Map).isEmpty) {
         debugPrint(
           'MockApiService: No mock data available for endpoint "$endpointKey", returning empty response',
@@ -423,9 +423,16 @@ class MockApiService implements IApiService {
 
   // No HTTP client creation required for mock service when using Dio
 
-  String? _getMockDataFile(String object, String method) {
+  String? _getMockDataFile(
+    String object,
+    String method,
+    Map<String, dynamic>? params,
+  ) {
     // Map object.method combinations to mock data files
     final key = '$object.$method';
+    if (key == 'uci.get') {
+      return params?['config'] == 'wireless' ? 'uci_wireless.json' : null;
+    }
 
     final mockFileMap = {
       'system.board': 'system_board.json',
@@ -435,7 +442,6 @@ class MockApiService implements IApiService {
       'network.interface.dump': 'interface_dump.json',
       'wireless.devices': 'wireless_devices.json',
       'file.exec': 'dhcp_leases.json', // For DHCP leases command
-      'uci.get': 'uci_wireless.json', // For wireless config
       'luci.wireguard.getWgInstances': 'wireguard_peers.json',
       'iwinfo.assoclist': 'associated_stations.json',
       'luci-rpc.getNetworkDevices': 'network_devices.json',
@@ -446,7 +452,11 @@ class MockApiService implements IApiService {
     return mockFileMap[key];
   }
 
-  dynamic _getDefaultMockData(String object, String method) {
+  dynamic _getDefaultMockData(
+    String object,
+    String method, [
+    Map<String, dynamic>? params,
+  ]) {
     // Return default mock data based on object and method
     switch ('$object.$method') {
       case 'system.board':
@@ -738,6 +748,46 @@ class MockApiService implements IApiService {
           },
         ];
 
+      case 'luci-rpc.getBoardJSON':
+        return [
+          0,
+          {
+            'switch': {
+              'switch0': {
+                'ports': [
+                  {'num': 5, 'device': 'eth0'},
+                  {'num': 0, 'role': 'lan', 'index': 1},
+                  {'num': 1, 'role': 'lan', 'index': 2},
+                  {'num': 2, 'role': 'lan', 'index': 3},
+                  {'num': 3, 'role': 'lan', 'index': 4},
+                  {'num': 4, 'role': 'wan'},
+                ],
+              },
+            },
+          },
+        ];
+
+      case 'luci.getSwconfigFeatures':
+        return [
+          0,
+          {'switch_title': 'mock-switch'},
+        ];
+
+      case 'luci.getSwconfigPortState':
+        return [
+          0,
+          {
+            'result': [
+              {'port': 5, 'link': true, 'speed': 1000, 'duplex': true},
+              {'port': 0, 'link': true, 'speed': 1000, 'duplex': true},
+              {'port': 1, 'link': true, 'speed': 100, 'duplex': true},
+              {'port': 2, 'link': false},
+              {'port': 3, 'link': false},
+              {'port': 4, 'link': false},
+            ],
+          },
+        ];
+
       case 'luci.wireguard.getWgInstances':
         // WireGuard instances data
         return [
@@ -810,6 +860,21 @@ class MockApiService implements IApiService {
 
       case 'uci.get':
         // UCI configuration data (generic response for various configs)
+        if (params?['config'] == 'network') {
+          return [
+            0,
+            {
+              'values': {
+                'cfg_switch0': {
+                  '.type': 'switch',
+                  'name': 'switch0',
+                  'reset': '1',
+                  'enable_vlan': '1',
+                },
+              },
+            },
+          ];
+        }
         return [
           0,
           {
