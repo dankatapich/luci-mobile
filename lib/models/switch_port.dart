@@ -174,13 +174,20 @@ SwitchPortGroup? buildDirectPortGroup({
     final spec = specs[index];
     final status = _directDeviceStatus(
       spec.device,
+      builtinPortStatus: spec.status,
       deviceStatuses: deviceStatuses,
       networkDevices: networkDevices,
     );
-    final speed = _toInt(status['speed'] ?? status['link_speed']);
-    final duplex = _toDuplexBool(status['duplex']);
-    final parsedLink =
-        _toBoolOrNull(status['carrier'] ?? status['link'] ?? status['up']);
+    final link = _asMap(status['link']);
+    final speed = _toInt(
+      status['speed'] ?? status['link_speed'] ?? link['speed'],
+    );
+    final duplex = _toDuplexBool(status['duplex'] ?? link['duplex']);
+    final parsedLink = _toBoolOrNull(
+      status['carrier'] ??
+          status['link_carrier'] ??
+          link['carrier'],
+    );
 
     ports.add(
       SwitchPort(
@@ -311,7 +318,11 @@ List<_DirectPortSpec> _parseDirectPortSpecs({
     if (device == null) continue;
 
     final label = _cleanString(port['label']) ?? device;
-    specsByDevice[device] = _DirectPortSpec(device: device, label: label);
+    specsByDevice[device] = _DirectPortSpec(
+      device: device,
+      label: label,
+      status: port,
+    );
   }
 
   if (specsByDevice.isEmpty) {
@@ -326,6 +337,7 @@ List<_DirectPortSpec> _parseDirectPortSpecs({
             specsByDevice[device] = _DirectPortSpec(
               device: device,
               label: device,
+              status: const {},
             );
           }
         }
@@ -335,6 +347,7 @@ List<_DirectPortSpec> _parseDirectPortSpecs({
           specsByDevice[device] = _DirectPortSpec(
             device: device,
             label: device,
+            status: const {},
           );
         }
       }
@@ -356,6 +369,7 @@ List<dynamic> _directPortItems(dynamic rawPorts) {
 
 Map<dynamic, dynamic> _directDeviceStatus(
   String device, {
+  required Map<dynamic, dynamic> builtinPortStatus,
   required Map<String, dynamic> deviceStatuses,
   required dynamic networkDevices,
 }) {
@@ -363,16 +377,20 @@ Map<dynamic, dynamic> _directDeviceStatus(
   if (directStatus.isNotEmpty) return directStatus;
 
   final deviceData = _asMap(_asMap(networkDevices)[device]);
-  if (deviceData.isEmpty) return const {};
+  if (deviceData.isEmpty) return builtinPortStatus;
 
   final stats = _asMap(deviceData['stats']);
   if (stats.isNotEmpty) {
     return {
+      ...builtinPortStatus,
       ...deviceData,
       ...stats,
     };
   }
-  return deviceData;
+  return {
+    ...builtinPortStatus,
+    ...deviceData,
+  };
 }
 
 Map<int, _SwitchPortState> _parsePortStates(dynamic rawStatus) {
@@ -528,10 +546,12 @@ class _SwitchPortSpec {
 class _DirectPortSpec {
   final String device;
   final String label;
+  final Map<dynamic, dynamic> status;
 
   const _DirectPortSpec({
     required this.device,
     required this.label,
+    required this.status,
   });
 }
 

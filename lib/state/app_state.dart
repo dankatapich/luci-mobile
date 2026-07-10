@@ -843,40 +843,12 @@ class AppState extends ChangeNotifier {
         (group) => group.visiblePorts.isNotEmpty,
       );
 
-      final directDeviceStatuses = <String, dynamic>{};
-      if (!hasSwconfigPorts) {
-        final directPortNames = extractDirectPortNamesFromData(
-          builtinPorts: builtinEthernetPorts,
-          boardJson: boardJson,
-        );
-        if (directPortNames.isNotEmpty) {
-          await Future.wait(
-            directPortNames.map((deviceName) async {
-              final statusRaw = await callOptionalRpc(
-                object: 'network.device',
-                method: 'status',
-                params: {'name': deviceName},
-              );
-              if (statusRaw != null) {
-                final statusData = getOptionalData(
-                  statusRaw,
-                  'network.device.status $deviceName',
-                );
-                if (statusData != null) {
-                  directDeviceStatuses[deviceName] = statusData;
-                }
-              }
-            }),
-          );
-        }
-      }
-
       final directPortGroup = hasSwconfigPorts
           ? null
           : buildDirectPortGroup(
               builtinPorts: builtinEthernetPorts,
               boardJson: boardJson,
-              deviceStatuses: directDeviceStatuses,
+              deviceStatuses: const <String, dynamic>{},
               networkDevices: networkData,
             );
       final switchPortGroups = <SwitchPortGroup>[

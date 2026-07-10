@@ -140,6 +140,37 @@ void main() {
       expect(group.visiblePorts.last.statusText, 'No link');
     });
 
+    test('builds direct ethernet status from network device link cache', () {
+      final group = buildDirectPortGroup(
+        builtinPorts: {
+          'result': [
+            {'role': 'lan', 'device': 'lan1'},
+            {'role': 'lan', 'device': 'lan2'},
+            {'role': 'wan', 'device': 'wan'},
+          ],
+        },
+        boardJson: {},
+        deviceStatuses: const <String, dynamic>{},
+        networkDevices: {
+          'lan1': {
+            'link': {'carrier': true, 'speed': 1000, 'duplex': 'full'},
+          },
+          'lan2': {
+            'link': {'carrier': true, 'speed': 100, 'duplex': 'full'},
+          },
+          'wan': {
+            'link': {'carrier': false},
+          },
+        },
+      );
+
+      expect(group, isNotNull);
+      expect(group!.connectedPortCount, 2);
+      expect(group.visiblePorts.first.statusText, '1000baseT full-duplex');
+      expect(group.visiblePorts[1].statusText, '100baseT full-duplex');
+      expect(group.visiblePorts.last.statusText, 'No link');
+    });
+
     test('falls back to board network ports for direct ethernet devices', () {
       final names = extractDirectPortNamesFromData(
         builtinPorts: {},
